@@ -19,3 +19,21 @@ python train_laprepr.py <some_experiment_label> --config_file=you_hypers_file.ya
 ```
 
 The code requires Jax, Haiku and a few such dependencies.
+
+# Installation on Mila cluster
+```
+module load python/3.10 libffi OpenSSL
+python -m venv lap_env
+source lap_env/bin/activate
+
+pip install --upgrade pip
+
+pip install jax==0.4.25 jaxlib==0.4.25 dm-haiku optax matplotlib pyyaml tqdm gymnasium wandb mpmath equinox
+```
+
+To test the installation, run
+```
+python train_laprepr.py “test” --save_dir ~/scratch/lap_logs
+```
+
+

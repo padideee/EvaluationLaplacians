@@ -4,59 +4,48 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict, namedtuple
 from datetime import datetime
 
+from src.trainer.trainer import Trainer
+
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
-
 import wandb
+
+import src.env
+from src.env.wrapper.norm_obs import NormObs, NormObsAtari
+from src.agent.agent import BehaviorAgent as Agent
+from src.policy import DiscreteUniformRandomPolicy as Policy
+# from src.policy import DiscreteEpsilonGreedyPolicy as EpsilonGreedyPolicy
+from src.env.grid.utils import load_eig
+
+from ..tools import timer_tools
+from ..tools import summary_tools
+from ..tools import saving
 import jax
 import haiku as hk
 import jax.numpy as jnp
 import numpy as np
 import optax
+
 import matplotlib.pyplot as plt
-
-from src.trainer.trainer import Trainer
-from src.env.wrapper.norm_obs import NormObs, NormObsAtari
-from src.policy.ppo_agent import PPOAgent
-from src.env.grid.utils import load_eig
-from ..tools import timer_tools
-from ..tools import summary_tools
-from ..tools import saving
-
-# For Rbf interpolation:
 from scipy.interpolate import Rbf
 
+
 MC_sample = namedtuple(
-    "MC_sample",
+    "MC_sample", 
     "state future_state uncorrelated_state_1 uncorrelated_state_2"
 )
 
 
-class LaplacianEncoderTrainer(Trainer, ABC):
-    """
-    Trainer that learns Laplacian-based representations,
-    and repeatedly collecting new data from a PPO policy during the training loop.
-    """
-
+class LaplacianEncoderTrainer(Trainer, ABC):    # TODO: Handle device
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.reset_counters()
         self.build_environment()
-        import pdb; pdb.set_trace()
 
-        self.ppo_agent = PPOAgent(
-            env=self.env,
-            seed=self.seed,
-            num_actions=self.env.action_space.n,
-            gamma=0.99,
-            lam=0.95,
-            learning_rate=3e-4,
-            clip_range=0.2,
-            # etc...
-        )
-
-        self.train_step_non_permuted = jax.jit(self.train_step_non_permuted)
+        self.collect_experience()
+        self.train_step_non_permuted = jax.jit(self.train_step_non_permuted)   # TODO: _train_step
         self.train_step_permuted = jax.jit(self.train_step_permuted)
+        # self.compute_cosine_similarity = jax.jit(self.compute_cosine_similarity)
         self.train_info = OrderedDict()
         self._global_step = 0
         self._best_cosine_similarity = -1
@@ -65,272 +54,189 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         self.permutation_array = jnp.arange(self.d)
         self.init_train_functions()
 
-    def train(self) -> None:
-        """
-        Main training loop:
-          1. Periodically collect new on-policy data from PPO
-          2. Update PPO's policy
-          3. Run Laplacian representation updates from the (growing) replay buffer
-        """
-        timer = timer_tools.Timer()
-
-        rng = hk.PRNGSequence(self.rng_key)
-
-        # Initialize representation params
-        sample_input = self._get_train_batch_fallback()
-        encoder_params = self.encoder_fn.init(next(rng), sample_input.state)
-        params = {'encoder': encoder_params}
-        additional_params = self.init_additional_params()
-        params.update(additional_params)
-        opt_state = self.optimizer.init(params)
-
-        # Quick sanity check
-        sample_output = self.encoder_fn.apply(params['encoder'], sample_input.state)
-        avg_norm = jnp.linalg.norm(sample_output, axis=1).mean()
-        if avg_norm < 1e-6:
-            raise Warning(f"Initial parameters might be degenerate. Norm is {avg_norm}")
-
-        timer.set_step(0)
-
-        # how often to collect from PPO vs. how many representation steps?
-        # For instance, do a PPO rollout for `rollout_length` steps every time
-        # we do `ppo_update_frequency` representation updates:
-        rollout_length = 2000
-        ppo_update_frequency = 1_000  # e.g. collect new PPO data every 1000 Laplacian updates
-        ppo_epochs = 10
-
-        for step in range(self.total_train_steps):
-            import pdb; pdb.set_trace()
-            # 1) Periodically collect fresh PPO rollouts
-            #    and update PPO. (we can this once per "epoch" rather than each step.)
-            if (step % ppo_update_frequency) == 0:
-                transitions = self.ppo_agent.collect_ppo_experience(rollout_length)
-                self.replay_buffer.add_steps(transitions)
-                for _ in range(ppo_epochs):
-                    self.ppo_agent.update(transitions)
-                print(f" [PPO data collection] replay buffer size = {self.replay_buffer.size()}")
-
-            # 2) Sample from replay buffer for Laplacian updates
-            train_batch = self._get_train_batch()
-
-            # Possibly do permutation step if relevant
-            is_permutation_step = ((step + 1) % self.permute_step) == 0
-            if is_permutation_step:
-                self.past_permutation_array = self.permutation_array.copy()
-                self.permutation_array = jax.random.permutation(next(rng), self.d)
-                self.init_train_functions()
-
-            # 3) Laplacian representation update
-            params, opt_state, metrics = self.jitted_train_step(params, train_batch, opt_state)
-            self._global_step += 1
-
-            params = self.additional_update_step(step, params)
-
-            # Logging
-            if ((step + 1) % self.print_freq) == 0:
-                losses = metrics[:-1]  # e.g. total_loss, graph_loss, ...
-                metrics_dict = metrics[-1]  # e.g. dictionary of logs
-
-                metrics_dict = self._compute_additional_metrics(params, metrics_dict)
-                metrics_dict['grad_step'] = self._global_step
-                metrics_dict['examples'] = self._global_step * self.batch_size
-                metrics_dict['wall_clock_time'] = timer.time_cost()
-
-                self.train_info['loss_total'] = np.array([jax.device_get(losses[0])])[0]
-                self.train_info['graph_loss'] = np.array([jax.device_get(losses[1])])[0]
-                self.train_info['dual_loss'] = np.array([jax.device_get(losses[2])])[0]
-                self.train_info['barrier_loss'] = np.array([jax.device_get(losses[3])])[0]
-
-                steps_per_sec = timer.steps_per_sec(step)
-                print(f"Training steps per second: {steps_per_sec:.4g}.")
-                self._print_train_info()
-                if self.use_wandb:
-                    self.logger.log(metrics_dict)
-
-            # Plot or save if needed
-            is_last_step = (step + 1) == self.total_train_steps
-            is_plot_step = (self.do_plot_eigenvectors and (is_last_step or is_permutation_step))
-            if is_plot_step:
-                self.plot_eigenvectors(params['encoder'])
-
-            is_save_step = (
-                    self.save_model
-                    and ((((step + 1) % self.save_model_every) == 0) or is_last_step)
-            )
-            if is_save_step:
-                self._save_model(params, opt_state, metrics_dict.get("cosine_similarity"))
-
-        print(f"Training complete. Time: {timer.time_cost():.2f}s")
-
-    # Fallback in case the replay buffer is empty at the very beginning of training
-    def _get_train_batch_fallback(self):
-        if self.replay_buffer.size() == 0:
-            # Make a small initial rollout so we can get shapes
-            transitions = self.ppo_agent.collect_ppo_experience(rollout_length=1000)
-            self.replay_buffer.add_steps(transitions)
-        return self._get_train_batch()
-
-
-    def _get_train_batch(self):
-        """Sample from replay buffer for Laplacian."""
-        state, future_state = self.replay_buffer.sample_pairs(
-            batch_size=self.batch_size,
-            discount=self.discount,
-        )
-        uncorr_1 = self.replay_buffer.sample_steps(self.batch_size)
-        uncorr_2 = self.replay_buffer.sample_steps(self.batch_size)
-        state, future_state, uncorr_1, uncorr_2 = map(
-            self._get_obs_batch, [state, future_state, uncorr_1, uncorr_2]
-        )
-        batch = MC_sample(state, future_state, uncorr_1, uncorr_2)
-        return batch
-
-    def _get_obs_batch(self, steps):
+    def _get_obs_batch(self, steps):   # TODO: Check this function (way to build the batch)
         if self.obs_mode in ["xy"]:
-            obs_batch = [s.step.agent_state["xy_agent"].astype(np.float32) for s in steps]
+            obs_batch = [s.step.agent_state["xy_agent"].astype(np.float32)
+                    for s in steps]
             return np.stack(obs_batch, axis=0)
         elif self.obs_mode in ["pixels", "both"]:
             obs_batch = [s.step.agent_state["pixels"] for s in steps]
-            return jnp.stack(obs_batch, axis=0).astype(jnp.float32) / 255
+            obs_batch = jnp.stack(obs_batch, axis=0).astype(jnp.float32)/255
+            # obs_batch = jnp.transpose(obs_batch, (0, 3, 1, 2))
+            return obs_batch
         elif self.obs_mode in ["grid", "both-grid"]:
-            obs_batch = [s.step.agent_state["grid"].astype(np.float32) / 255 for s in steps]
-            return np.stack(obs_batch, axis=0)
-        else:
-            raise ValueError(f"Unknown obs_mode {self.obs_mode}")
+            obs_batch = [s.step.agent_state["grid"].astype(np.float32)/255 for s in steps]
+            obs_batch = np.stack(obs_batch, axis=0)
+            # obs_batch = np.transpose(obs_batch, (0, 3, 1, 2))
+            return obs_batch
 
-    def train_step(self, params, train_batch, opt_state):
+    def _get_train_batch(self):
+        state, future_state = self.replay_buffer.sample_pairs(
+                batch_size=self.batch_size,
+                discount=self.discount,
+                )
+        uncorrelated_state_1 = self.replay_buffer.sample_steps(self.batch_size)
+        uncorrelated_state_2 = self.replay_buffer.sample_steps(self.batch_size)
+        state, future_state, uncorrelated_state_1, uncorrelated_state_2 = map(
+            self._get_obs_batch, [state, future_state, uncorrelated_state_1, uncorrelated_state_2])
+        batch = MC_sample(state, future_state, uncorrelated_state_1, uncorrelated_state_2)
+        return batch
+
+    def train_step(self, params, train_batch, opt_state) -> None:
+        # Compute the gradients and associated intermediate metrics
         grads, aux = jax.grad(self.loss_function, has_aux=True)(params, train_batch)
+
+        # Determine the real parameter updates
         updates, opt_state = self.optimizer.update(grads, opt_state)
+
+        # Update the encoder parameters
         params = optax.apply_updates(params, updates)
+
+        # Update the training state
         params = self.update_training_state(params, aux[1])
+
         return params, opt_state, aux[0]
 
-    def train_step_non_permuted(self, params, train_batch, opt_state):
+    def train_step_non_permuted(self, params, train_batch, opt_state) -> None:
+       
+        # Compute the gradients and associated intermediate metrics
         grads, aux = jax.grad(self.loss_function, has_aux=True)(params, train_batch)
-        updates, opt_state = self.optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
-        params = self.update_training_state(params, aux[1])
-        return params, opt_state, aux[0]
 
-    def train_step_permuted(self, params, train_batch, opt_state):
+        # Determine the real parameter updates
+        updates, opt_state = self.optimizer.update(grads, opt_state)
+
+        # Update the encoder parameters
+        params = optax.apply_updates(params, updates)
+
+        # Update the training state
+        params = self.update_training_state(params, aux[1])
+
+        return params, opt_state, aux[0]
+    
+    def train_step_permuted(self, params, train_batch, opt_state) -> None:
+       
+        # Compute the gradients and associated intermediate metrics
         grads, aux = jax.grad(self.loss_function_permuted, has_aux=True)(params, train_batch)
+
+        # Determine the real parameter updates
         updates, opt_state = self.optimizer.update(grads, opt_state)
+
+        # Update the encoder parameters
         params = optax.apply_updates(params, updates)
+
+        # Update the training state
         params = self.update_training_state(params, aux[1])
+
         return params, opt_state, aux[0]
-
-    def init_train_functions(self):
-        self.jitted_train_step = jax.jit(self.train_step)
-
-
+    
     @property
     def is_permute_phase(self):
         if hasattr(self, 'permute_step'):
             return self._global_step > self.permute_step
         else:
             return False
+        
+    def init_train_functions(self):
+        self.jitted_train_step = jax.jit(self.train_step)
 
+    def train(self) -> None:
 
-    # def train(self) -> None:
-    #
-    #     timer = timer_tools.Timer()
-    #
-    #     # Initialize the parameters
-    #     rng = hk.PRNGSequence(self.rng_key)
-    #     sample_input = self._get_train_batch()
-    #     encoder_params = self.encoder_fn.init(next(rng), sample_input.state)
-    #     params = {
-    #         'encoder': encoder_params,
-    #     }
-    #     # Add duals and state info to the params dictionary
-    #     additional_params = self.init_additional_params()
-    #     params.update(additional_params)
-    #
-    #     # Initialize the optimizer
-    #     opt_state = self.optimizer.init(
-    #         params)  # TODO: Should encoder_params be the only ones updated by the optimizer?
-    #
-    #     # Test the initial parameters
-    #     sample_output = self.encoder_fn.apply(params['encoder'], sample_input.state)
-    #     avg_sample_output_norm = jnp.linalg.norm(sample_output, axis=1, keepdims=True).mean()
-    #     if avg_sample_output_norm < 1e-6:
-    #         raise Warning(
-    #             f'Initial parameters have an average norm of {avg_sample_output_norm}. There might be a problem with the ConvNet layers')
-    #
-    #     # Learning begins   # TODO: Better comments
-    #     timer.set_step(0)
-    #     for step in range(self.total_train_steps):
-    #
-    #         train_batch = self._get_train_batch()
-    #
-    #         is_permutation_step = ((step + 1) % self.permute_step) == 0
-    #         if is_permutation_step:
-    #             self.past_permutation_array = self.permutation_array.copy()
-    #             self.permutation_array = jax.random.permutation(next(rng), self.d)
-    #             self.init_train_functions()
-    #
-    #         params, opt_state, metrics = self.jitted_train_step(params, train_batch, opt_state)
-    #
-    #         # if not self.is_permute_phase:
-    #         #     params, opt_state, metrics = self.train_step_non_permuted(params, train_batch, opt_state)
-    #         # else:
-    #         #     params, opt_state, metrics = self.train_step_permuted(params, train_batch, opt_state)
-    #
-    #         self._global_step += 1  # TODO: Replace with self.step_counter
-    #
-    #         params = self.additional_update_step(step, params)
-    #
-    #         # Save and print info
-    #         is_log_step = ((step + 1) % self.print_freq) == 0
-    #         if is_log_step:  # TODO: Replace with self.log_counter
-    #
-    #             losses = metrics[:-1]
-    #             metrics_dict = metrics[-1]
-    #
-    #             metrics_dict = self._compute_additional_metrics(params, metrics_dict)
-    #
-    #             metrics_dict['grad_step'] = self._global_step
-    #             metrics_dict['examples'] = self._global_step * self.batch_size
-    #             metrics_dict['wall_clock_time'] = timer.time_cost()
-    #
-    #             self.train_info['loss_total'] = np.array([jax.device_get(losses[0])])[0]
-    #             self.train_info['graph_loss'] = np.array([jax.device_get(losses[1])])[0]
-    #             self.train_info['dual_loss'] = np.array([jax.device_get(losses[2])])[0]
-    #             self.train_info['barrier_loss'] = np.array([jax.device_get(losses[3])])[0]
-    #
-    #             steps_per_sec = timer.steps_per_sec(step)
-    #             print(f'Training steps per second: {steps_per_sec:.4g}.')  # TODO: Use logging instead of print
-    #
-    #             self._print_train_info()
-    #             if self.use_wandb:  # TODO: Use an alternative to wandb if False
-    #                 # Log metrics
-    #                 self.logger.log(metrics_dict)
-    #
-    #         is_last_step = (step + 1) == self.total_train_steps
-    #         is_plot_step = (
-    #                 self.do_plot_eigenvectors
-    #                 and (
-    #                         is_last_step
-    #                         or is_permutation_step
-    #                 )
-    #         )
-    #         if is_plot_step:
-    #             self.plot_eigenvectors(params['encoder'])
-    #
-    #         is_save_step = (
-    #                 self.save_model
-    #                 and (
-    #                         (((step + 1) % self.save_model_every) == 0)
-    #                         or is_last_step
-    #                 )
-    #         )
-    #         if is_save_step:
-    #             self._save_model(params, opt_state, metrics_dict.get('cosine_similarity'))
-    #
-    #         # import pdb; pdb.set_trace()
-    #
-    #     time_cost = timer.time_cost()
-    #     print(f'Training finished, time cost {time_cost:.4g}s.')
+        timer = timer_tools.Timer()
+
+        # Initialize the parameters
+        rng = hk.PRNGSequence(self.rng_key)
+        sample_input = self._get_train_batch()
+        encoder_params = self.encoder_fn.init(next(rng), sample_input.state)
+        params = {
+            'encoder': encoder_params,
+        }
+        # Add duals and state info to the params dictionary
+        additional_params = self.init_additional_params()
+        params.update(additional_params)
+        
+        # Initialize the optimizer
+        opt_state = self.optimizer.init(params)   # TODO: Should encoder_params be the only ones updated by the optimizer?
+
+        # Test the initial parameters
+        sample_output = self.encoder_fn.apply(params['encoder'], sample_input.state)
+        avg_sample_output_norm = jnp.linalg.norm(sample_output, axis=1, keepdims=True).mean()
+        if avg_sample_output_norm < 1e-6:
+            raise Warning(f'Initial parameters have an average norm of {avg_sample_output_norm}. There might be a problem with the ConvNet layers')
+
+        # Learning begins   # TODO: Better comments
+        timer.set_step(0)
+        for step in range(self.total_train_steps):
+
+            train_batch = self._get_train_batch()
+
+            is_permutation_step = ((step + 1) % self.permute_step) == 0
+            if is_permutation_step:
+                self.past_permutation_array = self.permutation_array.copy()
+                self.permutation_array = jax.random.permutation(next(rng), self.d)
+                self.init_train_functions()
+
+            params, opt_state, metrics = self.jitted_train_step(params, train_batch, opt_state)
+
+            # if not self.is_permute_phase:
+            #     params, opt_state, metrics = self.train_step_non_permuted(params, train_batch, opt_state)
+            # else:
+            #     params, opt_state, metrics = self.train_step_permuted(params, train_batch, opt_state)
+            
+            self._global_step += 1   # TODO: Replace with self.step_counter
+            
+            params = self.additional_update_step(step, params)
+
+            # Save and print info
+            is_log_step = ((step + 1) % self.print_freq) == 0
+            if is_log_step:   # TODO: Replace with self.log_counter
+
+                losses = metrics[:-1]
+                metrics_dict = metrics[-1]
+                
+                metrics_dict = self._compute_additional_metrics(params, metrics_dict)
+                
+                metrics_dict['grad_step'] = self._global_step
+                metrics_dict['examples'] = self._global_step * self.batch_size                
+                metrics_dict['wall_clock_time'] = timer.time_cost()
+
+                self.train_info['loss_total'] = np.array([jax.device_get(losses[0])])[0]
+                self.train_info['graph_loss'] = np.array([jax.device_get(losses[1])])[0]
+                self.train_info['dual_loss'] = np.array([jax.device_get(losses[2])])[0]
+                self.train_info['barrier_loss'] = np.array([jax.device_get(losses[3])])[0]
+                
+                steps_per_sec = timer.steps_per_sec(step)
+                print(f'Training steps per second: {steps_per_sec:.4g}.')   # TODO: Use logging instead of print
+
+                self._print_train_info()
+                if self.use_wandb:   # TODO: Use an alternative to wandb if False
+                    # Log metrics
+                    self.logger.log(metrics_dict)
+
+            is_last_step = (step + 1) == self.total_train_steps
+            is_plot_step = (
+                self.do_plot_eigenvectors
+                and (
+                    is_last_step
+                    or is_permutation_step
+                )
+            )
+            if is_plot_step:
+                self.plot_eigenvectors(params['encoder'])
+
+            is_save_step = (
+                self.save_model 
+                and (
+                    (((step + 1) % self.save_model_every) == 0)
+                    or is_last_step
+                )
+            )
+            if is_save_step:
+                self._save_model(params, opt_state, metrics_dict.get('cosine_similarity'))
+
+            # import pdb; pdb.set_trace()
+
+        time_cost = timer.time_cost()
+        print(f'Training finished, time cost {time_cost:.4g}s.')
 
     def _compute_additional_metrics(self, params, metrics_dict):
         '''Compute additional metrics (cosine similarity, so far).'''
@@ -341,9 +247,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             metrics_dict = self._compute_metrics_atari(params, metrics_dict)
         else:
             raise ValueError(f'Invalid environment family: {self.env_family}')
-
+    
         return metrics_dict
-
+        
     def _compute_metrics_tabular(self, params, metrics_dict):
 
         # Compute cosine similarities
@@ -352,14 +258,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         cs_simple, sim_simple, permuted_cs_simple, permuted_sim_simple = self.compute_cosine_similarity_simple(
             params['encoder'])
         maximal_cs, maximal_sim = self.compute_maximal_cosine_similarity(params['encoder'])
-
+        
         # Store metrics
         metrics_dict['cosine_similarity'] = cs
         metrics_dict['cosine_similarity_simple'] = cs_simple
         metrics_dict['cosine_similarity_simple_permuted'] = permuted_cs_simple
         metrics_dict['maximal_cosine_similarity'] = maximal_cs
 
-        for feature in range(len(sim)):  # Similarities for each feature
+        for feature in range(len(sim)):   # Similarities for each feature
             metrics_dict[f'cosine_similarity_{feature}'] = sim[feature]
             metrics_dict[f'cosine_similarity_simple_{feature}'] = sim_simple[feature]
             metrics_dict[f'cosine_similarity_simple_permuted_{feature}'] = permuted_sim_simple[feature]
@@ -370,9 +276,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         self.train_info['cos_sim_s'] = np.array([jax.device_get(cs_simple)])[0]
         self.train_info['cos_sim_s_permuted'] = np.array([jax.device_get(permuted_cs_simple)])[0]
         self.train_info['max_cos_sim'] = np.array([jax.device_get(maximal_cs)])[0]
-
+        
         return metrics_dict
-
+    
     def _compute_metrics_atari(self, params, metrics_dict):
         '''Leave metrics_dict unchanged for now.'''
 
@@ -381,8 +287,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     def _save_model(self, params, optim_state, cosine_similarity):
         # Save the model if the cosine similarity is better than the previous best
         should_save_best = (
-                not (cosine_similarity is None)
-                and (cosine_similarity > self._best_cosine_similarity)
+            not (cosine_similarity is None) 
+            and (cosine_similarity > self._best_cosine_similarity)
         )
         if should_save_best:
             save_path_best = f'./results/models/{self.env_name}/best_{self._date_time}.pkl'
@@ -396,9 +302,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             )
 
             # Log parameters
-            if self.use_wandb:
+            if self.use_wandb:                    
                 best_model = wandb.Artifact(
-                    name='best_model',
+                    name='best_model', 
                     type='model',
                     description='Best model found during training.',
                 )
@@ -408,9 +314,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
                 # Save the artifact
                 self.logger.log_artifact(best_model)
-
+            
         # Save the model every log step
-        save_path_last = f'./results/models/{self.env_name}/last_{self._date_time}.pkl'
+        save_path_last = f'./results/models/{self.env_name}/last_{self._date_time}.pkl'        
         saving.save_model(
             params=params,
             optim_state=optim_state,
@@ -421,7 +327,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # Log parameters
         if self.use_wandb:
             last_model = wandb.Artifact(
-                name='last_model',
+                name='last_model', 
                 type='model',
                 description='Most recent model.',
             )
@@ -432,19 +338,19 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             # Save the artifact
             self.logger.log_artifact(last_model)
 
-    def _print_train_info(self):  # TODO: Replace this function
+    def _print_train_info(self):   # TODO: Replace this function
         summary_str = summary_tools.get_summary_str(
-            step=self._global_step, info=self.train_info)
-        print(summary_str)  # TODO: Use logging instead of print
+                step=self._global_step, info=self.train_info)
+        print(summary_str)   # TODO: Use logging instead of print
 
-    def reset_counters(self) -> None:
+    def reset_counters(self) -> None:   
         self.step_counter = 0
         self.log_counter = 0
 
     def update_counters(self) -> None:
         self.step_counter += 1
         self.log_counter = (self.log_counter + 1) % self.print_freq
-
+        
     @property
     def is_tabular(self):
         return self.env_family in ['Grid-v0']
@@ -465,10 +371,10 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # Create environment
         path_txt_grid = f'./src/env/grid/txts/{self.env_name}.txt'
         env = gym.make(
-            self.env_family,
-            path=path_txt_grid,
-            render_mode="rgb_array",
-            use_target=False,
+            self.env_family, 
+            path=path_txt_grid, 
+            render_mode="rgb_array", 
+            use_target=False, 
             eig=eig,
             obs_mode=self.obs_mode,
             window_size=self.window_size,
@@ -501,7 +407,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         # Create eigenvector dictionary
         real_eigval = eigenvalues[:self.d]
-        real_eigvec = self.env.unwrapped.get_eigenvectors()[:, :self.d]
+        real_eigvec = self.env.unwrapped.get_eigenvectors()[:,:self.d]
 
         assert not np.isnan(real_eigvec).any(), \
             f'NaN values in the real eigenvectors: {real_eigvec}'
@@ -523,9 +429,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         for i, eigval in enumerate(real_eigval):
             if eigval not in eigvec_dict:
                 eigvec_dict[eigval] = []
-            eigvec_dict[eigval].append(jnp_real_eigvec_norm[:, i])
+            eigvec_dict[eigval].append(jnp_real_eigvec_norm[:,i])
         self.eigvec_dict = eigvec_dict
-
+        
         # Print multiplicity of first eigenvalues
         multiplicities = [len(eigvec_dict[eigval]) for eigval in eigvec_dict.keys()]
         for i, eigval in enumerate(eigvec_dict.keys()):
@@ -540,7 +446,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     def build_atari_environment(self):
         env_name = f'ALE/{self.env_name}-v5'
         env = gym.make(env_name)
-
+        
         # Wrap environment with observation normalization
         obs_wrapper = lambda e: NormObsAtari(e)
         env = obs_wrapper(env)
@@ -556,87 +462,39 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # Set environment as attribute
         self.env = env
 
-    # def collect_experience(self) -> None:
-    #     # Create agent
-    #     policy = Policy(
-    #         num_actions=self.env.action_space.n,
-    #         seed=self.seed
-    #     )
-    #     agent = Agent(policy)
-    #
-    #     # Collect trajectories from random actions
-    #     print('Start collecting samples.')  # TODO: Use logging
-    #     timer = timer_tools.Timer()
-    #     total_n_steps = 0
-    #     collect_batch = 10_000  # TODO: Check if necessary
-    #     while total_n_steps < self.n_samples:
-    #         n_steps = min(collect_batch,
-    #                       self.n_samples - total_n_steps)
-    #         steps = agent.collect_experience(self.env, n_steps)
-    #         self.replay_buffer.add_steps(steps)
-    #         total_n_steps += n_steps
-    #         print(f'({total_n_steps}/{self.n_samples}) steps collected.')
-    #     time_cost = timer.time_cost()
-    #     print(f'Data collection finished, time cost: {time_cost}s')
-    #
-    #     # Plot visitation counts
-    #     if self.obs_mode in ['xy']:
-    #         self.plot_visitation_counts(timer)
-    #
-    # def encode_states(
-    #         self,
-    #         params_encoder,
-    #         train_batch: MC_sample,
-    #         *args, **kwargs,
-    # ) -> Tuple[jnp.ndarray]:
-    #
-    #     # Compute start representations
-    #     start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
-    #     constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
-    #
-    #     # Compute end representations
-    #     end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
-    #     constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
-    #
-    #     # Permute representations
-    #     start_representation = self.permute_representations(start_representation)
-    #     end_representation = self.permute_representations(end_representation)
-    #     constraint_representation_1 = self.permute_representations(constraint_representation_1)
-    #     constraint_representation_2 = self.permute_representations(constraint_representation_2)
-    #
-    #     return (
-    #         start_representation, end_representation,
-    #         constraint_representation_1,
-    #         constraint_representation_2,
-    #     )
-
-    def encode_states_non_permuted(
-            self,
-            params_encoder,
-            train_batch: MC_sample,
-            *args, **kwargs,
-    ) -> Tuple[jnp.ndarray]:
-
-        # Compute start representations
-        start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
-        constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
-
-        # Compute end representations
-        end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
-        constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
-
-        return (
-            start_representation, end_representation,
-            constraint_representation_1,
-            constraint_representation_2,
+    def collect_experience(self) -> None:
+        # Create agent
+        policy = Policy(
+            num_actions=self.env.action_space.n, 
+            seed=self.seed
         )
+        agent = Agent(policy)
 
-    def encode_states_permuted(
-            self,
+        # Collect trajectories from random actions
+        print('Start collecting samples.')   # TODO: Use logging
+        timer = timer_tools.Timer()
+        total_n_steps = 0
+        collect_batch = 10_000   # TODO: Check if necessary
+        while total_n_steps < self.n_samples:
+            n_steps = min(collect_batch, 
+                    self.n_samples - total_n_steps)
+            steps = agent.collect_experience(self.env, n_steps)
+            self.replay_buffer.add_steps(steps)
+            total_n_steps += n_steps
+            print(f'({total_n_steps}/{self.n_samples}) steps collected.')
+        time_cost = timer.time_cost()
+        print(f'Data collection finished, time cost: {time_cost}s')
+
+        # Plot visitation counts
+        if self.obs_mode in ['xy']:
+            self.plot_visitation_counts(timer)
+
+    def encode_states(
+            self, 
             params_encoder,
             train_batch: MC_sample,
             *args, **kwargs,
-    ) -> Tuple[jnp.ndarray]:
+        ) -> Tuple[jnp.ndarray]:
 
         # Compute start representations
         start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
@@ -647,17 +505,65 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
 
         # Permute representations
-        start_representation = start_representation[:, ::-1]
-        end_representation = end_representation[:, ::-1]
-        constraint_representation_1 = constraint_representation_1[:, ::-1]
-        constraint_representation_2 = constraint_representation_2[:, ::-1]
+        start_representation = self.permute_representations(start_representation)
+        end_representation = self.permute_representations(end_representation)
+        constraint_representation_1 = self.permute_representations(constraint_representation_1)
+        constraint_representation_2 = self.permute_representations(constraint_representation_2)
 
         return (
-            start_representation, end_representation,
-            constraint_representation_1,
+            start_representation, end_representation, 
+            constraint_representation_1, 
             constraint_representation_2,
         )
+   
+    def encode_states_non_permuted(
+            self, 
+            params_encoder,
+            train_batch: MC_sample,
+            *args, **kwargs,
+        ) -> Tuple[jnp.ndarray]:
 
+        # Compute start representations
+        start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
+        constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
+
+        # Compute end representations
+        end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
+        constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
+
+        return (
+            start_representation, end_representation, 
+            constraint_representation_1, 
+            constraint_representation_2,
+        )
+    
+    def encode_states_permuted(
+            self, 
+            params_encoder,
+            train_batch: MC_sample,
+            *args, **kwargs,
+        ) -> Tuple[jnp.ndarray]:
+
+        # Compute start representations
+        start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
+        constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
+
+        # Compute end representations
+        end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
+        constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
+
+        # Permute representations
+        start_representation = start_representation[:,::-1]
+        end_representation = end_representation[:,::-1]
+        constraint_representation_1 = constraint_representation_1[:,::-1]
+        constraint_representation_2 = constraint_representation_2[:,::-1]
+
+        return (
+            start_representation, end_representation, 
+            constraint_representation_1, 
+            constraint_representation_2,
+        )
+    
     def update_target(self) -> None:
         has_target = hasattr(self.model, 'target') and self.model.target is not None
         if has_target:
@@ -679,11 +585,11 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         else:
             raise ValueError(f'Invalid observation mode: {self.obs_mode}')
         return states
-
+    
     def split_into_batches(self, data, batch_size=32):
         num_batches = np.ceil(len(data) / batch_size).astype(int)
         return [data[i * batch_size:(i + 1) * batch_size] for i in range(num_batches)]
-
+    
     def permute_representations(self, representations):
         '''Permute entries in the second dimension of the representations'''
         permuted_representations = representations.copy()[:, self.permutation_array]
@@ -691,7 +597,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
     def compute_cosine_similarity(self, params_encoder, batch_size=32):
         # Get states
-        states = self.get_states()
+        states = self.get_states()             
 
         # Get approximated eigenvectors
         approx_eigvec = self.encoder_fn.apply(params_encoder, states)
@@ -704,7 +610,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # state_batches = self.split_into_batches(states, batch_size)
 
         # # Get approximated eigenvectors
-        # approx_eigvec_batches = []
+        # approx_eigvec_batches = []        
         # for state_batch in state_batches:
         #     approx_eigvec = self.encoder_fn.apply(params_encoder, state_batch)
         #     approx_eigvec_batches.append(approx_eigvec)
@@ -718,7 +624,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         # Permute the approximated eigenvectors
         approx_eigvec = approx_eigvec[:, self.past_permutation_array]
-
+        
         # Compute cosine similarities for both directions
         unique_real_eigval = sorted(self.eigvec_dict.keys(), reverse=True)
 
@@ -728,17 +634,17 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         for i, eigval in enumerate(unique_real_eigval):
             multiplicity = len(self.eigvec_dict[eigval])
             # print(f'Eigenvalue {eigval} has multiplicity {multiplicity}')
-
+            
             # Compute cosine similarity
             if multiplicity == 1:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = self.eigvec_dict[eigval][0]
-                current_approx_eigvec = approx_eigvec[:, id_]
+                current_approx_eigvec = approx_eigvec[:,id_]
 
                 # Check if any NaN values are present
                 assert not jnp.isnan(current_approx_eigvec).any(), \
                     f'NaN values in the approximated eigenvector: {current_approx_eigvec}'
-
+                
                 assert not jnp.isnan(current_real_eigvec).any(), \
                     f'NaN values in the real eigenvector: {current_real_eigvec}'
 
@@ -749,20 +655,19 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             else:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = self.eigvec_dict[eigval]
-                current_approx_eigvec = approx_eigvec[:, id_:id_ + multiplicity]
-
+                current_approx_eigvec = approx_eigvec[:,id_:id_+multiplicity]
+                
                 # Rotate approximated eigenvectors to match the space spanned by the real eigenvectors
                 optimal_approx_eigvec = self.rotate_eigenvectors(
                     current_real_eigvec, current_approx_eigvec)
 
                 norms = jnp.linalg.norm(optimal_approx_eigvec, axis=0, keepdims=True)
-                optimal_approx_eigvec = optimal_approx_eigvec / norms.clip(
-                    min=1e-10)  # We normalize, since the cosine similarity is invariant to scaling
-
+                optimal_approx_eigvec = optimal_approx_eigvec / norms.clip(min=1e-10)   # We normalize, since the cosine similarity is invariant to scaling
+                
                 # Compute cosine similarity
                 for j in range(multiplicity):
                     real = current_real_eigvec[j]
-                    approx = optimal_approx_eigvec[:, j]
+                    approx = optimal_approx_eigvec[:,j]
                     pos_sim = (real).dot(approx)
                     similarities.append(jnp.maximum(pos_sim, -pos_sim))
 
@@ -779,11 +684,11 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             f'NaN values in the cosine similarities: {similarities}'
 
         return cosine_similarity, similarities
-
+    
     def compute_cosine_similarity_simple(self, params_encoder):
         # Get states
         states = self.get_states()
-
+        
         # Get approximated eigenvectors
         approx_eigvec = self.encoder_fn.apply(params_encoder, states)
 
@@ -803,17 +708,17 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         for i, eigval in enumerate(unique_real_eigval):
             multiplicity = len(self.eigvec_dict[eigval])
             # print(f'Eigenvalue {eigval} has multiplicity {multiplicity}')
-
+            
             # Compute cosine similarity
             if multiplicity == 1:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = self.eigvec_dict[eigval][0]
-                current_approx_eigvec = permuted_approx_eigvec[:, id_]
+                current_approx_eigvec = permuted_approx_eigvec[:,id_]
 
                 # Check if any NaN values are present
                 assert not jnp.isnan(current_approx_eigvec).any(), \
                     f'NaN values in the approximated eigenvector: {current_approx_eigvec}'
-
+                
                 assert not jnp.isnan(current_real_eigvec).any(), \
                     f'NaN values in the real eigenvector: {current_real_eigvec}'
 
@@ -824,14 +729,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             else:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = jnp.stack(self.eigvec_dict[eigval], axis=1)
-                current_approx_eigvec = permuted_approx_eigvec[:, id_:id_ + multiplicity]
-
+                current_approx_eigvec = permuted_approx_eigvec[:,id_:id_+multiplicity]
+                
                 # Compute projections
                 projection_matrix = jnp.einsum('ij,ik->jk', current_approx_eigvec, current_real_eigvec)
 
                 # Compute generalized cosine similarity
-                cos_sim = (projection_matrix ** 2).sum(axis=1) ** 0.5
-                for similarity in cos_sim:
+                cos_sim = (projection_matrix**2).sum(axis=1)**0.5  
+                for similarity in cos_sim:               
                     similarities.append(similarity)
 
             id_ += multiplicity
@@ -844,17 +749,17 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         for i, eigval in enumerate(unique_real_eigval):
             multiplicity = len(self.eigvec_dict[eigval])
             # print(f'Eigenvalue {eigval} has multiplicity {multiplicity}')
-
+            
             # Compute cosine similarity
             if multiplicity == 1:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = self.eigvec_dict[eigval][0]
-                current_approx_eigvec = permuted_approx_eigvec[:, id_]
+                current_approx_eigvec = permuted_approx_eigvec[:,id_]
 
                 # Check if any NaN values are present
                 assert not jnp.isnan(current_approx_eigvec).any(), \
                     f'NaN values in the approximated eigenvector: {current_approx_eigvec}'
-
+                
                 assert not jnp.isnan(current_real_eigvec).any(), \
                     f'NaN values in the real eigenvector: {current_real_eigvec}'
 
@@ -865,14 +770,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             else:
                 # Get eigenvectors associated with the current eigenvalue
                 current_real_eigvec = jnp.stack(self.eigvec_dict[eigval], axis=1)
-                current_approx_eigvec = permuted_approx_eigvec[:, id_:id_ + multiplicity]
-
+                current_approx_eigvec = permuted_approx_eigvec[:,id_:id_+multiplicity]
+                
                 # Compute projections
                 projection_matrix = jnp.einsum('ij,ik->jk', current_approx_eigvec, current_real_eigvec)
 
                 # Compute generalized cosine similarity
-                cos_sim = (projection_matrix ** 2).sum(axis=1) ** 0.5
-                for similarity in cos_sim:
+                cos_sim = (projection_matrix**2).sum(axis=1)**0.5  
+                for similarity in cos_sim:               
                     permuted_similarities.append(similarity)
 
             id_ += multiplicity
@@ -890,14 +795,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             f'NaN values in the cosine similarities: {similarities}'
 
         return cosine_similarity, similarities, permuted_cosine_similarity, permuted_similarities
-
+    
     def find_best_basis_for_eigenvectors(
-            self,
-            u_list: list,
+            self, 
+            u_list: list, 
             E: jnp.ndarray
-    ) -> jnp.ndarray:
+        ) -> jnp.ndarray:
         '''
-            Rotate the eigenvectors in E to match the
+            Rotate the eigenvectors in E to match the 
             eigenvectors in u_list as close as possible.
             That is, we are finding the optimal basis of
             the subspace spanned by the eigenvectors in E
@@ -908,20 +813,20 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         rotated_eigvec = []
 
         # Compute first eigenvector
-        u1 = u_list[0].reshape(-1, 1)
+        u1 = u_list[0].reshape(-1,1)
         A = E.T.dot(E)
-        b = 0.5 * E.T.dot(u1)
+        b = 0.5*E.T.dot(u1)
         x = jnp.linalg.solve(A, b)
-        u1_approx = E.dot(x).reshape(-1, 1).clip(min=1e-10)
+        u1_approx = E.dot(x).reshape(-1,1).clip(min=1e-10)
         u1_approx = u1_approx / jnp.linalg.norm(u1_approx)
         rotated_eigvec.append(u1_approx)
 
         # Compute remaining eigenvectors
         for k in range(1, len(u_list)):
-            uk = u_list[k].reshape(-1, 1)
+            uk = u_list[k].reshape(-1,1)
             Uk = jnp.concatenate(rotated_eigvec, axis=1)
-            bk = 0.5 * E.T.dot(uk)
-            Bk = 0.5 * E.T.dot(Uk)
+            bk = 0.5*E.T.dot(uk)
+            Bk = 0.5*E.T.dot(Uk)
             xk = jnp.linalg.solve(A, bk)
             Xk = jnp.linalg.solve(A, Bk)
             Mk = Uk.T.dot(E)
@@ -929,20 +834,20 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             bbk = Mk.dot(xk)
             mu_leq_k = jnp.linalg.solve(Ak, bbk)
             wk = xk - Xk.dot(mu_leq_k)
-            uk_approx = E.dot(wk).reshape(-1, 1)
+            uk_approx = E.dot(wk).reshape(-1,1)
             uk_approx = uk_approx / jnp.linalg.norm(uk_approx).clip(min=1e-10)
             rotated_eigvec.append(uk_approx)
 
         rotated_eigvec = jnp.concatenate(rotated_eigvec, axis=1)
         return rotated_eigvec
-
+    
     def rotate_eigenvectors(
-            self,
-            u_list: list,
+            self, 
+            u_list: list, 
             E: jnp.ndarray
-    ) -> jnp.ndarray:
+        ) -> jnp.ndarray:
         '''
-            Rotate the eigenvectors in E to match the
+            Rotate the eigenvectors in E to match the 
             eigenvectors in u_list as close as possible.
             That is, we are finding the optimal basis of
             the subspace spanned by the eigenvectors in E
@@ -953,20 +858,20 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         rotation_vectors = []
 
         # Compute first eigenvector
-        u1 = u_list[0].reshape(-1, 1)
-        w1_times_lambda_1 = 0.5 * E.T.dot(u1)
+        u1 = u_list[0].reshape(-1,1)
+        w1_times_lambda_1 = 0.5*E.T.dot(u1)
         w1 = w1_times_lambda_1 / jnp.linalg.norm(w1_times_lambda_1).clip(min=1e-10)
         rotation_vectors.append(w1)
 
         # Compute remaining eigenvectors
         for k in range(1, len(u_list)):
-            uk = u_list[k].reshape(-1, 1)
+            uk = u_list[k].reshape(-1,1)
             Wk = jnp.concatenate(rotation_vectors, axis=1)
             improper_wk = E.T.dot(uk)
             bk = Wk.T.dot(improper_wk)
             Ak = Wk.T.dot(Wk)
             mu_k = jnp.linalg.solve(Ak, bk)
-            wk_times_lambda_k = 0.5 * (improper_wk - Wk.dot(mu_k))
+            wk_times_lambda_k = 0.5*(improper_wk - Wk.dot(mu_k))
             wk = wk_times_lambda_k / jnp.linalg.norm(wk_times_lambda_k).clip(min=1e-10)
             rotation_vectors.append(wk)
 
@@ -976,7 +881,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # Obtain list of rotated eigenvectors
         rotated_eigvec = E.dot(R)
         return rotated_eigvec
-
+    
     def compute_maximal_cosine_similarity(self, params_encoder):
         # Get states
         states = self.get_states()
@@ -985,26 +890,25 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         approx_eigvec = self.encoder_fn.apply(params_encoder, states)
         norms = jnp.linalg.norm(approx_eigvec, axis=0, keepdims=True)
         approx_eigvec = approx_eigvec / norms.clip(min=1e-10)
-
+        
         # Select rotation function
         rotation_function = self.rotate_eigenvectors
-
+        
         real_eigvec = []
         for eigval in self.eigvec_dict.keys():
             real_eigvec = real_eigvec + self.eigvec_dict[eigval]
-
+                
         # Rotate approximated eigenvectors to match the space spanned by the real eigenvectors
         optimal_approx_eigvec = rotation_function(
             real_eigvec, approx_eigvec)
         norms = jnp.linalg.norm(optimal_approx_eigvec, axis=0, keepdims=True)
-        optimal_approx_eigvec = optimal_approx_eigvec / norms.clip(
-            min=1e-10)  # We normalize, since the cosine similarity is invariant to scaling
-
+        optimal_approx_eigvec = optimal_approx_eigvec / norms.clip(min=1e-10)   # We normalize, since the cosine similarity is invariant to scaling
+        
         # Compute cosine similarity
         similarities = []
         for j in range(self.d):
             real = real_eigvec[j]
-            approx = optimal_approx_eigvec[:, j]
+            approx = optimal_approx_eigvec[:,j]
             pos_sim = (real).dot(approx)
             similarities.append(jnp.maximum(pos_sim, -pos_sim))
 
@@ -1015,20 +919,20 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         cosine_similarity = similarities.mean()
 
         return cosine_similarity, similarities
-
+    
     def plot_visitation_counts(self, timer):
         min_visitation, max_visitation, visitation_entropy, max_entropy, visitation_freq = \
-            self.replay_buffer.plot_visitation_counts(
-                self.env.get_states()['xy_agent'],  # TODO: Make this more general (not only for xy or both)
-                self.env_name,
-                self.env.unwrapped.get_grid().astype(bool),
+                self.replay_buffer.plot_visitation_counts(
+                    self.env.get_states()['xy_agent'],   # TODO: Make this more general (not only for xy or both)
+                    self.env_name,
+                    self.env.unwrapped.get_grid().astype(bool),
             )
         time_cost = timer.time_cost()
         print(f'Visitation evaluated, time cost: {time_cost}s')
         print(f'Min visitation: {min_visitation}')
         print(f'Max visitation: {max_visitation}')
         print(f'Visitation entropy: {visitation_entropy}/{max_entropy}')
-
+    
     def plot_eigenvectors(self, params_encoder):
         """Plot each of the eigenvectors."""
         # Get states
@@ -1037,14 +941,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # Get approximated eigenvectors
         approx_eigvec = self.encoder_fn.apply(params_encoder, states)
         norms = jnp.linalg.norm(approx_eigvec, axis=0, keepdims=True)
-        approx_eigvec = approx_eigvec / norms.clip(min=1e-10)
+        approx_eigvec = approx_eigvec / norms.clip(min=1e-10)   
 
         # Obtain sign of first non-zero element of eigenvectors
         first_non_zero_id = jnp.argmax(approx_eigvec != 0, axis=0)
-
+        
         # Choose directions of eigenvectors
         signs = jnp.sign(approx_eigvec[jnp.arange(approx_eigvec.shape[1]), first_non_zero_id])
-        approx_eigvec = approx_eigvec * signs.reshape(1, -1)
+        approx_eigvec = approx_eigvec * signs.reshape(1,-1)
 
         grid = self.env.unwrapped.get_grid().astype(bool)
         vmin = jnp.min(approx_eigvec)
@@ -1052,19 +956,19 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         # Plot approximated eigenvectors
         for i in range(self.d):
-            eigenvector = approx_eigvec[:, i]
+            eigenvector = approx_eigvec[:,i]
             self.plot_single_eigenvector(states, i, eigenvector, grid, vmin, vmax)
 
         print('Eigenvectors plotted.')
-
+    
     def plot_single_eigenvector(self, states, eigenvector_id, eigenvector, grid, vmin, vmax):
         """Plot each of the eigenvectors."""
-
+        
         # Obtain x, y, z coordinates, where z is the visitation count
-        y = states[:, 0]
-        x = states[:, 1]
+        y = states[:,0]
+        x = states[:,1]
         z = eigenvector
-
+                    
         # Calculate tile size
         x_num_tiles = np.unique(x).shape[0]
         x_tile_size = (np.max(x) - np.min(x)) / x_num_tiles
@@ -1072,8 +976,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         y_tile_size = (np.max(y) - np.min(y)) / y_num_tiles
 
         # Create grid for interpolation
-        ti_x = np.linspace(x.min() - x_tile_size, x.max() + x_tile_size, x_num_tiles + 2)
-        ti_y = np.linspace(y.min() - y_tile_size, y.max() + y_tile_size, y_num_tiles + 2)
+        ti_x = np.linspace(x.min()-x_tile_size, x.max()+x_tile_size, x_num_tiles+2)
+        ti_y = np.linspace(y.min()-y_tile_size, y.max()+y_tile_size, y_num_tiles+2)
         XI, YI = np.meshgrid(ti_x, ti_y)
 
         # Interpolate
@@ -1081,9 +985,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         ZI = rbf(XI, YI)
         ZI_bounds = 85 * np.ma.masked_where(grid, np.ones_like(ZI))
         ZI_free = np.ma.masked_where(~grid, ZI)
-
+        
         # Generate color mesh
-        fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+        fig, ax = plt.subplots(1,1, figsize=(10,10))
         mesh = ax.pcolormesh(XI, YI, ZI_free, shading='auto', cmap='coolwarm', vmin=vmin, vmax=vmax)
         ax.pcolormesh(XI, YI, ZI_bounds, shading='auto', cmap='Greys', vmin=0, vmax=255)
         ax.set_aspect('equal')
@@ -1100,10 +1004,10 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             os.makedirs(os.path.dirname(fig_path))
 
         plt.savefig(
-            fig_path,
-            bbox_inches='tight',
-            dpi=300,
-            transparent=True,
+            fig_path, 
+            bbox_inches='tight', 
+            dpi=300, 
+            transparent=True, 
         )
 
     @abstractmethod
@@ -1113,15 +1017,15 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     @abstractmethod
     def loss_function_non_permuted(self, *args, **kwargs):
         raise NotImplementedError
-
+    
     @abstractmethod
     def loss_function_permuted(self, *args, **kwargs):
         raise NotImplementedError
-
+    
     @abstractmethod
     def update_training_state(self, *args, **kwargs):
         raise NotImplementedError
-
+    
     @abstractmethod
     def additional_update_step(self, *args, **kwargs):
-        raise NotImplementedError
+        raise NotImplementedError    
