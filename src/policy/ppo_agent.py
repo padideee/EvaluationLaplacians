@@ -75,7 +75,8 @@ class PPOAgent:
         self.rng_seq = hk.PRNGSequence(seed)
 
         # Dummy input to initialize params
-        dummy_obs = jnp.zeros((1,) + env.observation_space.shape, dtype=jnp.float32)
+        obs_space = env.observation_space.spaces['xy_agent']
+        dummy_obs = jnp.zeros((1,) + obs_space.shape, dtype=jnp.float32)
         self.params = self.network.init(next(self.rng_seq), dummy_obs)
 
         # Build optimizer

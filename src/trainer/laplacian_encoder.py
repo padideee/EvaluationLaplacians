@@ -164,7 +164,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
     # Fallback in case the replay buffer is empty at the very beginning of training
     def _get_train_batch_fallback(self):
-        if self.replay_buffer.size() == 0:
+        import pdb; pdb.set_trace()
+        if self.replay_buffer._current_size == 0:
             # Make a small initial rollout so we can get shapes
             transitions = self.ppo_agent.collect_ppo_experience(rollout_length=1000)
             self.replay_buffer.add_steps(transitions)
