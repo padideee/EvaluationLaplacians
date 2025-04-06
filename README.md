@@ -28,7 +28,7 @@ source lap_env/bin/activate
 
 pip install --upgrade pip
 
-pip install jax==0.4.25 jaxlib==0.4.25 dm-haiku optax matplotlib pyyaml tqdm gymnasium wandb mpmath equinox
+pip install jaxlib==0.4.25 dm-haiku optax matplotlib pyyaml tqdm gymnasium wandb mpmath equinox pygame jax[cuda12]
 ```
 
 To test the installation, run
