@@ -119,7 +119,7 @@ class PPOAgent:
 
         Returns a list of transitions that you can feed to update(...) or store.
         """
-        obs = self.env.reset(seed=None)[0]  # (1) for Gymnasium >= v26
+        obs = self.env.reset(seed=None)[0]['xy_agent']  # (1) for Gymnasium >= v26
         obs = jnp.array(obs, dtype=jnp.float32)
 
         data = []
