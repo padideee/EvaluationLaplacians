@@ -42,12 +42,14 @@ class GridEnv(gym.Env):
             obs_mode: str = None,
             calculate_eig: bool = True,
             window_size: int = 64,
+            env_name: str = "GridRoom-16",
         ):
         self.grid = txt_to_grid(path)
         self.height = self.grid.shape[0]
         self.width = self.grid.shape[1]
         self.window_size = window_size   # Size of the PyGame window
         self.use_target = use_target
+        self.env_name = env_name
 
         if not render_fps is None:
             self.metadata["render_fps"] = render_fps
@@ -131,6 +133,9 @@ class GridEnv(gym.Env):
         if eig is None:
             if calculate_eig:
                 self._eigval, self._eigvec = self._compute_eigenvectors()
+                import pdb;
+                pdb.set_trace()
+                self.save_eigenpairs(f'./src/env/grid/eigval/GridRoom-16.npz') #{self.env_name}
             else:
                 self._eigval = None
                 self._eigvec = None
