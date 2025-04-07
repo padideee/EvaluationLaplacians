@@ -10,6 +10,29 @@ RolloutData = namedtuple(
     ['obs', 'actions', 'rewards', 'values', 'log_probs', 'masks', 'next_obs']
 )
 
+from dataclasses import dataclass
+
+@dataclass
+class Step:
+    obs: jnp.ndarray
+    action: int
+    reward: float
+    value: float
+    log_prob: float
+    next_obs: jnp.ndarray
+    episode_done: bool
+
+def unpack_rollout_data(rollout_data):
+    return dict(
+        obs=jnp.stack([s.obs for s in rollout_data]),
+        actions=jnp.array([s.action for s in rollout_data]),
+        rewards=jnp.array([s.reward for s in rollout_data]),
+        values=jnp.array([s.value for s in rollout_data]),
+        log_probs=jnp.array([s.log_prob for s in rollout_data]),
+        masks=jnp.array([1.0 - float(s.episode_done) for s in rollout_data]),
+        next_obs=jnp.stack([s.next_obs for s in rollout_data]),
+    )
+
 
 def mlp_policy_and_value_fn(obs, num_actions, hidden_sizes=(64, 64)):
     """
@@ -112,52 +135,81 @@ class PPOAgent:
 
         return action, logp, value[0]
 
+    # def collect_ppo_experience(self, rollout_length=2048):
+    #     """
+    #     Runs the current policy in the environment for `rollout_length` steps
+    #     (or until done). Collects Step(obs, action, reward, value, logp, next_obs, episode_done).
+    #     """
+    #
+    #     obs = self.env.reset(seed=None)[0]['xy_agent']
+    #     obs = jnp.array(obs, dtype=jnp.float32)
+    #
+    #     steps = []
+    #     for _ in range(rollout_length):
+    #         action, logp, value = self._get_action(self.params, obs[None, :])
+    #         action = int(action)  # convert from JAX to native int
+    #
+    #         next_obs, reward, done, truncated, info = self.env.step(action)
+    #         next_obs = jnp.array(next_obs['xy_agent'], dtype=jnp.float32)
+    #         done_or_trunc = done or truncated
+    #
+    #         step = Step(
+    #             obs=obs,
+    #             action=action,
+    #             reward=reward,
+    #             value=value,
+    #             log_prob=logp,
+    #             next_obs=next_obs,
+    #             episode_done=bool(done_or_trunc)
+    #         )
+    #         steps.append(step)
+    #
+    #         if done_or_trunc:
+    #             obs = self.env.reset(seed=None)[0]['xy_agent']
+    #         else:
+    #             obs = next_obs
+    #         obs = jnp.array(obs, dtype=jnp.float32)
+    #
+    #     return steps
     def collect_ppo_experience(self, rollout_length=2048):
-        """
-        Runs the current policy in the environment for `rollout_length` steps
-        (or until done). Collects (s, a, r, v, logp, mask, next_s) at each step.
-
-        Returns a list of transitions that you can feed to update(...) or store.
-        """
-        obs = self.env.reset(seed=None)[0]['xy_agent']  # (1) for Gymnasium >= v26
+        obs = self.env.reset(seed=None)[0]['xy_agent']
         obs = jnp.array(obs, dtype=jnp.float32)
 
-        data = []
+        steps = []
+        episode_return = 0.0
+        episode_returns = []
+
         for _ in range(rollout_length):
-            action, logp, value = self._get_action(self.params, obs[None, :])  # (1,batch_size)
-            action = np.asarray(action)  # to python int
+            action, logp, value = self._get_action(self.params, obs[None, :])
             action = int(action)
 
             next_obs, reward, done, truncated, info = self.env.step(action)
+            next_obs = jnp.array(next_obs['xy_agent'], dtype=jnp.float32)
             done_or_trunc = done or truncated
 
-            data.append((obs, action, reward, value, logp, 1.0 - float(done_or_trunc), next_obs))
+            step = Step(
+                obs=obs,
+                action=action,
+                reward=reward,
+                value=value,
+                log_prob=logp,
+                next_obs=next_obs,
+                episode_done=bool(done_or_trunc)
+            )
+            steps.append(step)
+
+            episode_return += reward
 
             if done_or_trunc:
-                obs = self.env.reset(seed=None)[0]
+                episode_returns.append(episode_return)
+                episode_return = 0.0
+                obs = self.env.reset(seed=None)[0]['xy_agent']
             else:
                 obs = next_obs
+
             obs = jnp.array(obs, dtype=jnp.float32)
 
-
-        obs_arr = jnp.stack([d[0] for d in data])
-        actions = np.array([d[1] for d in data])
-        rewards = np.array([d[2] for d in data], dtype=np.float32)
-        values = np.array([d[3] for d in data], dtype=np.float32)
-        log_probs = np.array([d[4] for d in data], dtype=np.float32)
-        masks = np.array([d[5] for d in data], dtype=np.float32)
-        next_obs_arr = jnp.stack([d[6] for d in data])
-
-        return RolloutData(
-            obs=obs_arr,
-            actions=actions,
-            rewards=rewards,
-            values=values,
-            log_probs=log_probs,
-            masks=masks,
-            next_obs=next_obs_arr
-        )
-
+        return steps, episode_returns
 
     def update(self, rollout_data: RolloutData, epochs=4, batch_size=64):
         """
@@ -166,13 +218,22 @@ class PPOAgent:
 
         The "rollout_data" is typically what collect_ppo_experience returned.
         """
-        obs = rollout_data.obs
-        actions = rollout_data.actions
-        rewards = rollout_data.rewards
-        values = rollout_data.values
-        old_log_probs = rollout_data.log_probs
-        masks = rollout_data.masks
-        next_obs = rollout_data.next_obs
+        # obs = rollout_data.obs
+        # actions = rollout_data.actions
+        # rewards = rollout_data.rewards
+        # values = rollout_data.values
+        # old_log_probs = rollout_data.log_probs
+        # masks = rollout_data.masks
+        # next_obs = rollout_data.next_obs
+        data = unpack_rollout_data(rollout_data)
+        obs = data["obs"]
+        actions = data["actions"]
+        rewards = data["rewards"]
+        values = data["values"]
+        old_log_probs = data["log_probs"]
+        masks = data["masks"]
+        next_obs = data["next_obs"]
+
 
         # 1) We need the value of the very last state for GAE bootstrapping
         #    We'll do a single forward pass on the last next_obs of the entire rollout.

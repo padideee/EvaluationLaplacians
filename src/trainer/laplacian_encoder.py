@@ -42,7 +42,6 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         super().__init__(*args, **kwargs)
         self.reset_counters()
         self.build_environment()
-        # import pdb; pdb.set_trace()
 
         self.ppo_agent = PPOAgent(
             env=self.env,
@@ -100,15 +99,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         ppo_epochs = 10
 
         for step in range(self.total_train_steps):
-            # import pdb; pdb.set_trace()
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
             if (step % ppo_update_frequency) == 0:
-                transitions = self.ppo_agent.collect_ppo_experience(rollout_length)
+                transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
                 self.replay_buffer.add_steps(transitions)
                 for _ in range(ppo_epochs):
                     self.ppo_agent.update(transitions)
-                print(f" [PPO data collection] replay buffer size = {self.replay_buffer.size()}")
+                print(f" [PPO data collection] replay buffer size = {self.replay_buffer._current_size}")
 
             # 2) Sample from replay buffer for Laplacian updates
             train_batch = self._get_train_batch()
@@ -130,6 +128,11 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             if ((step + 1) % self.print_freq) == 0:
                 losses = metrics[:-1]  # e.g. total_loss, graph_loss, ...
                 metrics_dict = metrics[-1]  # e.g. dictionary of logs
+
+                metrics_dict['mean_return'] = np.mean(returns)
+                metrics_dict['max_return'] = np.max(returns)
+                metrics_dict['min_return'] = np.min(returns)
+                print(f" [PPO data collection] mean return = {metrics_dict['mean_return']:.4g}, ")
 
                 metrics_dict = self._compute_additional_metrics(params, metrics_dict)
                 metrics_dict['grad_step'] = self._global_step
@@ -164,10 +167,9 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
     # Fallback in case the replay buffer is empty at the very beginning of training
     def _get_train_batch_fallback(self):
-        # import pdb; pdb.set_trace()
         if self.replay_buffer._current_size == 0:
             # Make a small initial rollout so we can get shapes
-            transitions = self.ppo_agent.collect_ppo_experience(rollout_length=1000)
+            transitions, episode_returns = self.ppo_agent.collect_ppo_experience(rollout_length=1000) #1000
             self.replay_buffer.add_steps(transitions)
         return self._get_train_batch()
 
@@ -188,7 +190,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
     def _get_obs_batch(self, steps):
         if self.obs_mode in ["xy"]:
-            obs_batch = [s.step.agent_state["xy_agent"].astype(np.float32) for s in steps]
+            obs_batch = [s.step.obs for s in steps]
+            #[s.step.agent_state["xy_agent"].astype(np.float32) for s in steps]
             return np.stack(obs_batch, axis=0)
         elif self.obs_mode in ["pixels", "both"]:
             obs_batch = [s.step.agent_state["pixels"] for s in steps]
@@ -585,32 +588,32 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     #     if self.obs_mode in ['xy']:
     #         self.plot_visitation_counts(timer)
     #
-    # def encode_states(
-    #         self,
-    #         params_encoder,
-    #         train_batch: MC_sample,
-    #         *args, **kwargs,
-    # ) -> Tuple[jnp.ndarray]:
-    #
-    #     # Compute start representations
-    #     start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
-    #     constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
-    #
-    #     # Compute end representations
-    #     end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
-    #     constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
-    #
-    #     # Permute representations
-    #     start_representation = self.permute_representations(start_representation)
-    #     end_representation = self.permute_representations(end_representation)
-    #     constraint_representation_1 = self.permute_representations(constraint_representation_1)
-    #     constraint_representation_2 = self.permute_representations(constraint_representation_2)
-    #
-    #     return (
-    #         start_representation, end_representation,
-    #         constraint_representation_1,
-    #         constraint_representation_2,
-    #     )
+    def encode_states(
+            self,
+            params_encoder,
+            train_batch: MC_sample,
+            *args, **kwargs,
+    ) -> Tuple[jnp.ndarray]:
+
+        # Compute start representations
+        start_representation = self.encoder_fn.apply(params_encoder, train_batch.state)
+        constraint_representation_1 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_1)
+
+        # Compute end representations
+        end_representation = self.encoder_fn.apply(params_encoder, train_batch.future_state)
+        constraint_representation_2 = self.encoder_fn.apply(params_encoder, train_batch.uncorrelated_state_2)
+
+        # Permute representations
+        start_representation = self.permute_representations(start_representation)
+        end_representation = self.permute_representations(end_representation)
+        constraint_representation_1 = self.permute_representations(constraint_representation_1)
+        constraint_representation_2 = self.permute_representations(constraint_representation_2)
+
+        return (
+            start_representation, end_representation,
+            constraint_representation_1,
+            constraint_representation_2,
+        )
 
     def encode_states_non_permuted(
             self,

@@ -42,7 +42,7 @@ class GridEnv(gym.Env):
             obs_mode: str = None,
             calculate_eig: bool = True,
             window_size: int = 64,
-            env_name: str = None
+            env_name: str = "GridRoom-16",
         ):
         self.grid = txt_to_grid(path)
         self.height = self.grid.shape[0]
