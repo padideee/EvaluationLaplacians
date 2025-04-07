@@ -126,6 +126,7 @@ class PPOAgent:
         for _ in range(rollout_length):
             action, logp, value = self._get_action(self.params, obs[None, :])  # (1,batch_size)
             action = np.asarray(action)  # to python int
+            action = int(action)
 
             next_obs, reward, done, truncated, info = self.env.step(action)
             done_or_trunc = done or truncated
