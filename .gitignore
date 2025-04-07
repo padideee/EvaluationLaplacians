@@ -138,3 +138,4 @@ src/data/*
 wandb
 results
 src/env/grid/eigval
+jobs/output
