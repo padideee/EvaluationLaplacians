@@ -472,7 +472,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             self.env_family,
             path=path_txt_grid,
             render_mode="rgb_array",
-            use_target=False,
+            use_target=True, #False,
             eig=eig,
             obs_mode=self.obs_mode,
             window_size=self.window_size,
