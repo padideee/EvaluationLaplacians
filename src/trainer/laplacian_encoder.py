@@ -42,7 +42,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         super().__init__(*args, **kwargs)
         self.reset_counters()
         self.build_environment()
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
         self.ppo_agent = PPOAgent(
             env=self.env,
@@ -100,7 +100,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         ppo_epochs = 10
 
         for step in range(self.total_train_steps):
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
             if (step % ppo_update_frequency) == 0:
@@ -164,7 +164,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
     # Fallback in case the replay buffer is empty at the very beginning of training
     def _get_train_batch_fallback(self):
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         if self.replay_buffer._current_size == 0:
             # Make a small initial rollout so we can get shapes
             transitions = self.ppo_agent.collect_ppo_experience(rollout_length=1000)
