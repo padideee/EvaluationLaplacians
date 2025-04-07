@@ -473,6 +473,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             eig=eig,
             obs_mode=self.obs_mode,
             window_size=self.window_size,
+            env_name=self.env_name
         )
         # Wrap environment with time limit
         time_wrapper = lambda e: TimeLimit(
