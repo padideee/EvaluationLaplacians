@@ -97,12 +97,14 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         rollout_length = 2000
         ppo_update_frequency = 1_000  # e.g. collect new PPO data every 1000 Laplacian updates
         ppo_epochs = 10
+        current_frames_count = 0
 
         for step in range(self.total_train_steps):
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
             if (step % ppo_update_frequency) == 0:
                 transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
+                current_frames_count += len(transitions)
                 self.replay_buffer.add_steps(transitions)
                 for _ in range(ppo_epochs):
                     self.ppo_agent.update(transitions)
@@ -132,6 +134,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
                 metrics_dict['mean_return'] = np.mean(returns)
                 metrics_dict['max_return'] = np.max(returns)
                 metrics_dict['min_return'] = np.min(returns)
+                metrics_dict['frames'] = current_frames_count
                 print(f" [PPO data collection] mean return = {metrics_dict['mean_return']:.4g}, ")
 
                 metrics_dict = self._compute_additional_metrics(params, metrics_dict)
