@@ -3,6 +3,8 @@ from typing import Tuple
 from abc import ABC, abstractmethod
 from collections import OrderedDict, namedtuple
 from datetime import datetime
+import networkx as nx
+from sklearn.metrics.pairwise import cosine_similarity
 
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
@@ -31,6 +33,19 @@ MC_sample = namedtuple(
     "state future_state uncorrelated_state_1 uncorrelated_state_2"
 )
 
+import matplotlib.pyplot as plt
+
+def save_histogram(values, step, label="degree", save_dir="./results/histograms", run_id="default"):
+        save_dir = os.path.join(save_dir, run_id)
+        os.makedirs(save_dir, exist_ok=True)
+        plt.figure(figsize=(6, 4))
+        plt.hist(values, bins=20, color="steelblue", edgecolor="black")
+        plt.title(f"{label.capitalize()} Histogram at Step {step}")
+        plt.xlabel(label)
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.savefig(f"{save_dir}/{label}_step_{step}.png")
+        plt.close()
 
 class LaplacianEncoderTrainer(Trainer, ABC):
     """
@@ -344,6 +359,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         if self.is_tabular:
             metrics_dict = self._compute_metrics_tabular(params, metrics_dict)
+            self.analyze_representation_graph(params['encoder'])
         elif self.env_family == 'Atari-v5':
             metrics_dict = self._compute_metrics_atari(params, metrics_dict)
         else:
@@ -1133,3 +1149,64 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     @abstractmethod
     def additional_update_step(self, *args, **kwargs):
         raise NotImplementedError
+
+
+
+    def analyze_representation_graph(self, params_encoder, threshold=0.8):
+        states = self.get_states()
+        embeddings = self.encoder_fn.apply(params_encoder, states)
+        # Normalize
+        norms = jnp.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / norms.clip(min=1e-10)
+
+        # Convert to numpy
+        embeddings = np.array(embeddings)
+
+        # Cosine similarity matrix
+        sim_matrix = cosine_similarity(embeddings)
+
+        # Build graph
+        G = nx.Graph()
+        for i in range(len(states)):
+            G.add_node(i)
+            for j in range(i + 1, len(states)):
+                if sim_matrix[i, j] > threshold:
+                    G.add_edge(i, j, weight=sim_matrix[i, j])
+
+        # Centrality measures
+        deg = nx.degree_centrality(G)
+        btw = nx.betweenness_centrality(G)
+        clo = nx.closeness_centrality(G)
+        # eig = nx.eigenvector_centrality(G, max_iter=1000)
+
+        # You can log mean/variance or plot histograms
+        print("Average Degree Centrality:", np.mean(list(deg.values())))
+        print("Max Betweenness Centrality:", max(btw.values()))
+        print("Closeness Entropy:", -np.sum([v*np.log(v + 1e-9) for v in clo.values()]))
+
+        # Optionally log to wandb
+        if self.use_wandb:
+            self.logger.log({
+                # 'centrality/degree_avg': np.mean(list(deg.values())),
+                # 'centrality/betweenness_max': max(btw.values()),
+                # 'centrality/eigenvector_var': np.var(list(eig.values())),
+                # 'histograms/degree': wandb.Histogram(list(deg.values())),
+                # 'histograms/betweenness': wandb.Histogram(list(btw.values())),
+                # 'histograms/eigenvector': wandb.Histogram(list(eig.values())),
+                'centrality/degree_avg': np.mean(list(deg.values())),
+                'centrality/degree_std': np.std(list(deg.values())),
+                'centrality/betweenness_max': max(btw.values()),
+                'centrality/closeness_avg': np.mean(list(clo.values())),
+                # 'centrality/eigenvector_var': np.var(list(eig.values())),
+                'histograms/degree': wandb.Histogram(list(deg.values())),
+                'histograms/betweenness': wandb.Histogram(list(btw.values())),
+                # 'histograms/eigenvector': wandb.Histogram(list(eig.values())),
+            })
+
+            save_histogram(list(deg.values()), step=self._global_step, label="degree", run_id=self.logger.id)
+            save_histogram(list(btw.values()), step=self._global_step, label="betweenness", run_id=self.logger.id)
+            # save_histogram(list(eig.values()), step=self._global_step, label="eigenvector")
+
+        # return G, deg, btw, clo, eig
+        return G, deg, btw, clo
+
