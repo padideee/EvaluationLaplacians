@@ -94,6 +94,7 @@ def main(hyperparams):
             project='laplacian-encoder', 
             dir=hparam_yaml['save_dir'],
             config=hparam_yaml,
+            name=hyperparams.exp_label
         )
         # wandb_logger.watch(laplacian_encoder)   # TODO: Test overhead
     else:

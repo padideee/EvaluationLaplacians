@@ -10,8 +10,8 @@ parser.add_argument('--config_name', type=str, default="al.yaml")
 # parser.add_argument('--seed', type=int, default=1234)
 
 
-batch_sizes = [512, 1024, 2048]
-env_names = ["GridRoom-16"]
+batch_sizes = [2048]
+env_names = ["GridRoom-1", "GridRoom-4", "GridRoom-16"]
 
 args = parser.parse_args()
 

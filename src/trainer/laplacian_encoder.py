@@ -110,7 +110,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # For instance, do a PPO rollout for `rollout_length` steps every time
         # we do `ppo_update_frequency` representation updates:
         rollout_length = 2000
-        ppo_update_frequency = 1_000  # e.g. collect new PPO data every 1000 Laplacian updates
+        ppo_update_frequency = 100  # e.g. collect new PPO data every 1000 Laplacian updates
         ppo_epochs = 10
         current_frames_count = 0
 
