@@ -168,6 +168,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
                 if self.use_wandb:
                     self.logger.log(metrics_dict)
 
+                self.plot_visitation_counts(timer, step)
+
             # Plot or save if needed
             is_last_step = (step + 1) == self.total_train_steps
             is_plot_step = (self.do_plot_eigenvectors and (is_last_step or is_permutation_step))
@@ -1040,12 +1042,12 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         return cosine_similarity, similarities
 
-    def plot_visitation_counts(self, timer):
+    def plot_visitation_counts(self, timer, step):
         min_visitation, max_visitation, visitation_entropy, max_entropy, visitation_freq = \
             self.replay_buffer.plot_visitation_counts(
                 self.env.get_states()['xy_agent'],  # TODO: Make this more general (not only for xy or both)
                 self.env_name,
-                self.env.unwrapped.get_grid().astype(bool),
+                self.env.unwrapped.get_grid().astype(bool), self.logger.id, step
             )
         time_cost = timer.time_cost()
         print(f'Visitation evaluated, time cost: {time_cost}s')

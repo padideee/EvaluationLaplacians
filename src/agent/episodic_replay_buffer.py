@@ -153,13 +153,13 @@ class EpisodicReplayBuffer:
         visitation_counts = collections.defaultdict(int)
         for episode in self._episodes:
             for step in episode:
-                agent_state = step.step.agent_state['xy_agent'].tolist()   # This assumes that the agent state is available and that it is a numpy array
+                agent_state = step.step.obs.tolist()   # This assumes that the agent state is available and that it is a numpy array
                 x = round(agent_state[1], 5)
                 y = round(agent_state[0], 5)
                 visitation_counts[(y,x)] += 1
         return visitation_counts
     
-    def plot_visitation_counts(self, states, env_name, grid):
+    def plot_visitation_counts(self, states, env_name, grid, logger_id, step):
         """Plot the visitation counts of each state."""
 
         import os
@@ -213,7 +213,7 @@ class EpisodicReplayBuffer:
         plt.colorbar(mesh, ax=ax, shrink=0.5, pad=0.05)
 
         # Save figure
-        fig_path = f'./results/visuals/{env_name}/visitation_counts.pdf'
+        fig_path = f'./results/state_visitations/{logger_id}/{env_name}/visitation_counts_{step}.pdf'
 
         if not os.path.exists(os.path.dirname(fig_path)):
             os.makedirs(os.path.dirname(fig_path))
