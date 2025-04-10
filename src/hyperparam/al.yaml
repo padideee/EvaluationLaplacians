@@ -40,3 +40,4 @@ lr_dual_velocities: 0.1
 min_duals: -100
 max_duals: 100
 permute_step: 20000
+use_degree_loss: True
