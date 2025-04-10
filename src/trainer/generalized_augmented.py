@@ -11,11 +11,12 @@ from src.trainer.laplacian_encoder import LaplacianEncoderTrainer
 
 
 class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_degree_loss=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # Matrix where each entry is the minimum of the corresponding row and column
         self.coefficient_vector = jnp.ones(self.d)
+        self.use_degree_loss = use_degree_loss
 
     def compute_graph_drawing_loss(self, start_representation, end_representation):
         '''Compute reprensetation distances between start and end states'''
@@ -170,7 +171,7 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
         
         loss = lagrangian
 
-        if kwargs.get('use_degree_loss', False):
+        if self.use_degree_loss:
             print(f"Get here")
             degree_loss = self.compute_degree_loss(start_representation)
             loss += degree_loss * 0.01
