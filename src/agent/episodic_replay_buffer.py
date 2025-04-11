@@ -82,18 +82,22 @@ class EpisodicReplayBuffer:
                     epi_step = EpisodicStep(self._episode_buffer[h], 
                             h + 1, H, self._r)
                     episode.append(epi_step)
-                # save as data
-                if self._next_idx == self._current_size:
-                    if self._current_size < self._max_size:
-                        self._episodes.append(episode)
-                        self._current_size += 1
-                        self._next_idx += 1
-                    else:
-                        self._episodes[0] = episode
-                        self._next_idx = 1
+
+                if len(episode) <= 2:
+                    print(f'Skipping epi with len: {len(episode)}')
                 else:
-                    self._episodes[self._next_idx] = episode
-                    self._next_idx += 1
+                    # save as data
+                    if self._next_idx == self._current_size:
+                        if self._current_size < self._max_size:
+                            self._episodes.append(episode)
+                            self._current_size += 1
+                            self._next_idx += 1
+                        else:
+                            self._episodes[0] = episode
+                            self._next_idx = 1
+                    else:
+                        self._episodes[self._next_idx] = episode
+                        self._next_idx += 1
                 # refresh episode buffer
                 self._episode_buffer = []
                 self._r = 0.0
@@ -101,6 +105,7 @@ class EpisodicReplayBuffer:
     def sample_steps(self, batch_size):
         episode_indices = self._sample_episodes(batch_size)
         step_ranges = self._gather_episode_lengths(episode_indices)
+        print(f"Step ranges: {step_ranges}")
         step_indices = uniform_sampling(step_ranges)
         s = []
         for epi_idx, step_idx in zip(episode_indices, step_indices):
@@ -148,13 +153,13 @@ class EpisodicReplayBuffer:
         visitation_counts = collections.defaultdict(int)
         for episode in self._episodes:
             for step in episode:
-                agent_state = step.step.agent_state['xy_agent'].tolist()   # This assumes that the agent state is available and that it is a numpy array
+                agent_state = step.step.obs.tolist()   # This assumes that the agent state is available and that it is a numpy array
                 x = round(agent_state[1], 5)
                 y = round(agent_state[0], 5)
                 visitation_counts[(y,x)] += 1
         return visitation_counts
     
-    def plot_visitation_counts(self, states, env_name, grid):
+    def plot_visitation_counts(self, states, env_name, grid, logger_id, step):
         """Plot the visitation counts of each state."""
 
         import os
@@ -208,7 +213,7 @@ class EpisodicReplayBuffer:
         plt.colorbar(mesh, ax=ax, shrink=0.5, pad=0.05)
 
         # Save figure
-        fig_path = f'./results/visuals/{env_name}/visitation_counts.pdf'
+        fig_path = f'./results/state_visitations/{logger_id}/{env_name}/visitation_counts_{step}.pdf'
 
         if not os.path.exists(os.path.dirname(fig_path)):
             os.makedirs(os.path.dirname(fig_path))

@@ -1,0 +1,131 @@
+
+======== GPU REPORT ========
+
+==============NVSMI LOG==============
+
+Timestamp                                 : Mon Apr  7 04:18:49 2025
+Driver Version                            : 560.35.03
+CUDA Version                              : 12.6
+
+Attached GPUs                             : 1
+GPU 00000000:01:00.0
+    Accounting Mode                       : Enabled
+    Accounting Mode Buffer Size           : 4000
+    Accounted Processes
+        Process ID                        : 4077698
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 393184 ms
+            Is Running                    : 0
+        Process ID                        : 4078192
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 855439 ms
+            Is Running                    : 0
+        Process ID                        : 4078898
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 219278 ms
+            Is Running                    : 0
+        Process ID                        : 4079077
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 58679 ms
+            Is Running                    : 0
+        Process ID                        : 4079182
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 64884 ms
+            Is Running                    : 0
+        Process ID                        : 4079274
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61428 MiB
+            Time                          : 14377 ms
+            Is Running                    : 0
+        Process ID                        : 4079338
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 381402 ms
+            Is Running                    : 0
+        Process ID                        : 4079892
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 4730 ms
+            Is Running                    : 0
+        Process ID                        : 4080115
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 4805 ms
+            Is Running                    : 0
+        Process ID                        : 4080307
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 4494 ms
+            Is Running                    : 0
+        Process ID                        : 4080627
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 4490 ms
+            Is Running                    : 0
+        Process ID                        : 4080840
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 18786 ms
+            Is Running                    : 0
+        Process ID                        : 4080991
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 4711 ms
+            Is Running                    : 0
+        Process ID                        : 4081188
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 125131 ms
+            Is Running                    : 0
+        Process ID                        : 4081430
+            GPU Utilization               : 1 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 11785 ms
+            Is Running                    : 0
+        Process ID                        : 4081652
+            GPU Utilization               : 0 %
+            Memory Utilization            : 0 %
+            Max memory usage              : 61430 MiB
+            Time                          : 59637 ms
+            Is Running                    : 0
+
+Mon Apr  7 04:18:50 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 560.35.03              Driver Version: 560.35.03      CUDA Version: 12.6     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-80GB          On  |   00000000:01:00.0 Off |                    0 |
+| N/A   35C    P0             62W /  500W |       1MiB /  81920MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI        PID   Type   Process name                              GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+

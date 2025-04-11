@@ -11,11 +11,12 @@ from src.trainer.laplacian_encoder import LaplacianEncoderTrainer
 
 
 class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_degree_loss=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # Matrix where each entry is the minimum of the corresponding row and column
         self.coefficient_vector = jnp.ones(self.d)
+        self.use_degree_loss = use_degree_loss
 
     def compute_graph_drawing_loss(self, start_representation, end_representation):
         '''Compute reprensetation distances between start and end states'''
@@ -112,7 +113,35 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
                     if i >= j
                 }
         return error_dict, updates
-    
+
+    def compute_degree_loss(self, embeddings, threshold=0.8):
+        """
+        embeddings: (batch_size, d)
+        Returns degree-based regularization loss.
+        """
+
+        # Normalize embeddings
+        norms = jnp.linalg.norm(embeddings, axis=1, keepdims=True)
+        normed = embeddings / jnp.clip(norms, a_min=1e-10)
+
+        # Cosine similarity
+        sim = normed @ normed.T  # shape: (B, B)
+
+        # Binary adjacency matrix
+        adj = sim > threshold
+
+        # Zero diagonal to remove self-connections
+        adj = adj.at[jnp.diag_indices(adj.shape[0])].set(False)
+
+        # Degree per node
+        degree = jnp.sum(adj, axis=1)
+
+        # Degree variance as regularizer
+        mean_degree = jnp.mean(degree)
+        loss = jnp.mean((degree - mean_degree) ** 2)
+
+        return loss
+
     def loss_function(
             self, params, train_batch, **kwargs
         ) -> Tuple[jnp.ndarray]:
@@ -141,6 +170,15 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
         lagrangian = graph_loss + dual_loss + barrier_loss
         
         loss = lagrangian
+
+        if self.use_degree_loss:
+            print(f"Get here")
+            degree_loss = self.compute_degree_loss(start_representation)
+            loss += degree_loss * 0.01
+
+        else:
+            degree_loss = 0
+
         if self.normalize_graph_loss:
             loss = loss / self.coefficient_vector.sum()
 
@@ -150,6 +188,7 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
             'graph_loss': graph_loss,
             'dual_loss': dual_loss,
             'barrier_loss': barrier_loss,
+            'degree_loss': degree_loss
         }
 
         # Add additional metrics

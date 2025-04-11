@@ -3,6 +3,8 @@ from typing import Tuple
 from abc import ABC, abstractmethod
 from collections import OrderedDict, namedtuple
 from datetime import datetime
+import networkx as nx
+from sklearn.metrics.pairwise import cosine_similarity
 
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
@@ -31,6 +33,19 @@ MC_sample = namedtuple(
     "state future_state uncorrelated_state_1 uncorrelated_state_2"
 )
 
+import matplotlib.pyplot as plt
+
+def save_histogram(values, step, label="degree", save_dir="./results/histograms", run_id="default"):
+        save_dir = os.path.join(save_dir, run_id)
+        os.makedirs(save_dir, exist_ok=True)
+        plt.figure(figsize=(6, 4))
+        plt.hist(values, bins=20, color="steelblue", edgecolor="black")
+        plt.title(f"{label.capitalize()} Histogram at Step {step}")
+        plt.xlabel(label)
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.savefig(f"{save_dir}/{label}_step_{step}.png")
+        plt.close()
 
 class LaplacianEncoderTrainer(Trainer, ABC):
     """
@@ -38,10 +53,11 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     and repeatedly collecting new data from a PPO policy during the training loop.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_representation_based_exp_bonus=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.reset_counters()
         self.build_environment()
+        self.use_representation_based_exp_bonus = use_representation_based_exp_bonus
 
         self.ppo_agent = PPOAgent(
             env=self.env,
@@ -51,6 +67,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             lam=0.95,
             learning_rate=3e-4,
             clip_range=0.2,
+            ent_coef=0.05
             # etc...
         )
 
@@ -95,14 +112,19 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # For instance, do a PPO rollout for `rollout_length` steps every time
         # we do `ppo_update_frequency` representation updates:
         rollout_length = 2000
-        ppo_update_frequency = 1_000  # e.g. collect new PPO data every 1000 Laplacian updates
+        ppo_update_frequency = 100  # e.g. collect new PPO data every 1000 Laplacian updates
         ppo_epochs = 10
+        current_frames_count = 0
 
         for step in range(self.total_train_steps):
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
             if (step % ppo_update_frequency) == 0:
-                transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
+                if self.use_representation_based_exp_bonus:
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length, self.encoder_fn, params['encoder'])
+                else:
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
+                current_frames_count += len(transitions)
                 self.replay_buffer.add_steps(transitions)
                 for _ in range(ppo_epochs):
                     self.ppo_agent.update(transitions)
@@ -132,6 +154,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
                 metrics_dict['mean_return'] = np.mean(returns)
                 metrics_dict['max_return'] = np.max(returns)
                 metrics_dict['min_return'] = np.min(returns)
+                metrics_dict['frames'] = current_frames_count
                 print(f" [PPO data collection] mean return = {metrics_dict['mean_return']:.4g}, ")
 
                 metrics_dict = self._compute_additional_metrics(params, metrics_dict)
@@ -149,6 +172,8 @@ class LaplacianEncoderTrainer(Trainer, ABC):
                 self._print_train_info()
                 if self.use_wandb:
                     self.logger.log(metrics_dict)
+
+                self.plot_visitation_counts(timer, step)
 
             # Plot or save if needed
             is_last_step = (step + 1) == self.total_train_steps
@@ -341,6 +366,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         if self.is_tabular:
             metrics_dict = self._compute_metrics_tabular(params, metrics_dict)
+            self.analyze_representation_graph(params['encoder'])
         elif self.env_family == 'Atari-v5':
             metrics_dict = self._compute_metrics_atari(params, metrics_dict)
         else:
@@ -476,7 +502,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             eig=eig,
             obs_mode=self.obs_mode,
             window_size=self.window_size,
-            env_name=self.env_name,
+            env_name=self.env_name
         )
         # Wrap environment with time limit
         time_wrapper = lambda e: TimeLimit(
@@ -1021,12 +1047,12 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
         return cosine_similarity, similarities
 
-    def plot_visitation_counts(self, timer):
+    def plot_visitation_counts(self, timer, step):
         min_visitation, max_visitation, visitation_entropy, max_entropy, visitation_freq = \
             self.replay_buffer.plot_visitation_counts(
                 self.env.get_states()['xy_agent'],  # TODO: Make this more general (not only for xy or both)
                 self.env_name,
-                self.env.unwrapped.get_grid().astype(bool),
+                self.env.unwrapped.get_grid().astype(bool), self.logger.id, step
             )
         time_cost = timer.time_cost()
         print(f'Visitation evaluated, time cost: {time_cost}s')
@@ -1130,3 +1156,64 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     @abstractmethod
     def additional_update_step(self, *args, **kwargs):
         raise NotImplementedError
+
+
+
+    def analyze_representation_graph(self, params_encoder, threshold=0.8):
+        states = self.get_states()
+        embeddings = self.encoder_fn.apply(params_encoder, states)
+        # Normalize
+        norms = jnp.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / norms.clip(min=1e-10)
+
+        # Convert to numpy
+        embeddings = np.array(embeddings)
+
+        # Cosine similarity matrix
+        sim_matrix = cosine_similarity(embeddings)
+
+        # Build graph
+        G = nx.Graph()
+        for i in range(len(states)):
+            G.add_node(i)
+            for j in range(i + 1, len(states)):
+                if sim_matrix[i, j] > threshold:
+                    G.add_edge(i, j, weight=sim_matrix[i, j])
+
+        # Centrality measures
+        deg = nx.degree_centrality(G)
+        btw = nx.betweenness_centrality(G)
+        clo = nx.closeness_centrality(G)
+        # eig = nx.eigenvector_centrality(G, max_iter=1000)
+
+        # You can log mean/variance or plot histograms
+        print("Average Degree Centrality:", np.mean(list(deg.values())))
+        print("Max Betweenness Centrality:", max(btw.values()))
+        print("Closeness Entropy:", -np.sum([v*np.log(v + 1e-9) for v in clo.values()]))
+
+        # Optionally log to wandb
+        if self.use_wandb:
+            self.logger.log({
+                # 'centrality/degree_avg': np.mean(list(deg.values())),
+                # 'centrality/betweenness_max': max(btw.values()),
+                # 'centrality/eigenvector_var': np.var(list(eig.values())),
+                # 'histograms/degree': wandb.Histogram(list(deg.values())),
+                # 'histograms/betweenness': wandb.Histogram(list(btw.values())),
+                # 'histograms/eigenvector': wandb.Histogram(list(eig.values())),
+                'centrality/degree_avg': np.mean(list(deg.values())),
+                'centrality/degree_std': np.std(list(deg.values())),
+                'centrality/betweenness_max': max(btw.values()),
+                'centrality/closeness_avg': np.mean(list(clo.values())),
+                # 'centrality/eigenvector_var': np.var(list(eig.values())),
+                'histograms/degree': wandb.Histogram(list(deg.values())),
+                'histograms/betweenness': wandb.Histogram(list(btw.values())),
+                # 'histograms/eigenvector': wandb.Histogram(list(eig.values())),
+            })
+
+            save_histogram(list(deg.values()), step=self._global_step, label="degree", run_id=self.logger.id)
+            save_histogram(list(btw.values()), step=self._global_step, label="betweenness", run_id=self.logger.id)
+            # save_histogram(list(eig.values()), step=self._global_step, label="eigenvector")
+
+        # return G, deg, btw, clo, eig
+        return G, deg, btw, clo
+

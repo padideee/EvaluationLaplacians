@@ -132,10 +132,9 @@ class GridEnv(gym.Env):
         # Compute the eigenvectors and eigenvalues of the dynamics matrix
         if eig is None:
             if calculate_eig:
+                path_eig = f'./src/env/grid/eigval/{self.env_name}.npz'
                 self._eigval, self._eigvec = self._compute_eigenvectors()
-                import pdb;
-                pdb.set_trace()
-                self.save_eigenpairs(f'./src/env/grid/eigval/GridRoom-16.npz') #{self.env_name}
+                self.save_eigenpairs(path_eig)
             else:
                 self._eigval = None
                 self._eigvec = None

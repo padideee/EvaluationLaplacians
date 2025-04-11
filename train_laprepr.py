@@ -91,9 +91,11 @@ def main(hyperparams):
 
         # Initialize wandb logger
         logger = wandb.init(
-            project='laplacian-encoder', 
+            project='laplacian-encoder--moved', 
             dir=hparam_yaml['save_dir'],
             config=hparam_yaml,
+            name=hyperparams.exp_label,
+            entity='doina-precup',
         )
         # wandb_logger.watch(laplacian_encoder)   # TODO: Test overhead
     else:

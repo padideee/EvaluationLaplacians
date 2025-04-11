@@ -3,7 +3,7 @@ n_samples: 200000
 batch_size: 1024
 discount: 0.9
 log_dir: '/tmp/rl_laprepr/log'
-total_train_steps: 20000
+total_train_steps: 40000
 print_freq: 200
 max_episode_steps: 50
 seed: 1234
@@ -40,3 +40,5 @@ lr_dual_velocities: 0.1
 min_duals: -100
 max_duals: 100
 permute_step: 20000
+use_degree_loss: False
+use_representation_based_exp_bonus: False
