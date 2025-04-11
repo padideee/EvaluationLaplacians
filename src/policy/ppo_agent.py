@@ -206,17 +206,19 @@ class PPOAgent:
 
                 # Compute r_intrinsic
                 r_intrinsic = self.compute_novelty(phi, self.phi_buffer)
-                reward = float(reward) +  0.1 * float(r_intrinsic)
 
                 # Update phi buffer
                 self.phi_buffer.append(phi)
                 if len(self.phi_buffer) > self.phi_buffer_size:
                     self.phi_buffer.pop(0)
 
+            else:
+                r_intrinsic = 0
+
             step = Step(
                 obs=obs,
                 action=action,
-                reward=reward,
+                reward=reward + 0.1 * r_intrinsic,
                 value=value,
                 log_prob=logp,
                 next_obs=next_obs,
