@@ -176,6 +176,9 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
             degree_loss = self.compute_degree_loss(start_representation)
             loss += degree_loss * 0.01
 
+        else:
+            degree_loss = 0
+
         if self.normalize_graph_loss:
             loss = loss / self.coefficient_vector.sum()
 
