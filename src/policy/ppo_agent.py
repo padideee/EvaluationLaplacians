@@ -88,6 +88,8 @@ class PPOAgent:
         self.ent_coef = ent_coef
         self.max_grad_norm = max_grad_norm
 
+        print(f"Ent coeff: {self.ent_coef}")
+
         # Build network
         def net_fn(obs):
             return mlp_policy_and_value_fn(obs, num_actions, hidden_sizes=policy_hidden_sizes)
