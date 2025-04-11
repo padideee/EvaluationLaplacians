@@ -41,3 +41,4 @@ min_duals: -100
 max_duals: 100
 permute_step: 20000
 use_degree_loss: False
+use_representation_based_exp_bonus: False

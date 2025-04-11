@@ -53,10 +53,11 @@ class LaplacianEncoderTrainer(Trainer, ABC):
     and repeatedly collecting new data from a PPO policy during the training loop.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, use_representation_based_exp_bonus=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.reset_counters()
         self.build_environment()
+        self.use_representation_based_exp_bonus = use_representation_based_exp_bonus
 
         self.ppo_agent = PPOAgent(
             env=self.env,
@@ -119,7 +120,10 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
             if (step % ppo_update_frequency) == 0:
-                transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
+                if self.use_representation_based_exp_bonus:
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length, self.encoder_fn, params['encoder'])
+                else:
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
                 current_frames_count += len(transitions)
                 self.replay_buffer.add_steps(transitions)
                 for _ in range(ppo_epochs):

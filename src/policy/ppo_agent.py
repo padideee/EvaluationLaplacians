@@ -87,6 +87,8 @@ class PPOAgent:
         self.vf_coef = vf_coef
         self.ent_coef = ent_coef
         self.max_grad_norm = max_grad_norm
+        self.phi_buffer = []
+        self.phi_buffer_size = 1000
 
         print(f"Ent coeff: {self.ent_coef}")
 
@@ -173,7 +175,13 @@ class PPOAgent:
     #         obs = jnp.array(obs, dtype=jnp.float32)
     #
     #     return steps
-    def collect_ppo_experience(self, rollout_length=2048):
+    def compute_novelty(self, phi, phi_buffer):
+        if len(phi_buffer) == 0:
+            return 1.0  # fully novel
+        dists = jnp.linalg.norm(jnp.stack(phi_buffer) - phi, axis=1)
+        return jnp.mean(dists)
+
+    def collect_ppo_experience(self, rollout_length=2048, encoder_func=None, params_encoder=None):
         obs = self.env.reset(seed=None)[0]['xy_agent']
         obs = jnp.array(obs, dtype=jnp.float32)
 
@@ -188,6 +196,22 @@ class PPOAgent:
             next_obs, reward, done, truncated, info = self.env.step(action)
             next_obs = jnp.array(next_obs['xy_agent'], dtype=jnp.float32)
             done_or_trunc = done or truncated
+
+            if encoder_func is not None and params_encoder is not None:
+                action, logp, value = self._get_action(self.params, obs[None, :])
+                action = int(action)
+
+                # Compute φ(s)
+                phi = encoder_func.apply(params_encoder, obs[None, :])[0]  # shape (d,)
+
+                # Compute r_intrinsic
+                r_intrinsic = self.compute_novelty(phi, self.phi_buffer)
+                reward = float(reward) +  0.1 * float(r_intrinsic)
+
+                # Update phi buffer
+                self.phi_buffer.append(phi)
+                if len(self.phi_buffer) > self.phi_buffer_size:
+                    self.phi_buffer.pop(0)
 
             step = Step(
                 obs=obs,
