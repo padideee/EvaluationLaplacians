@@ -67,7 +67,7 @@ class LaplacianEncoderTrainer(Trainer, ABC):
             lam=0.95,
             learning_rate=3e-4,
             clip_range=0.2,
-            ent_coef=0.05
+            ent_coef=0.2
             # etc...
         )
 
