@@ -1,11 +1,11 @@
 d: 11
-n_samples: 200000
-batch_size: 1024
-discount: 0.9
+n_samples: 20_000 
+batch_size: 256
+discount: 0.99
 log_dir: '/tmp/rl_laprepr/log'
-total_train_steps: 40000
+total_train_steps: 200_000
 print_freq: 200
-max_episode_steps: 50
+max_episode_steps: 10_000
 seed: 1234
 env_name: GridRoom-16
 env_family: Grid-v0
@@ -29,7 +29,7 @@ algorithm: al
 error_update_rate: 1
 q_error_update_rate: 0.1
 normalize_graph_loss: False
-barrier_initial_val: 2.0
+barrier_initial_val: 5
 lr_barrier_coefs: 1.0
 min_barrier_coefs: 0
 max_barrier_coefs: 10000
@@ -42,3 +42,7 @@ max_duals: 100
 permute_step: 20000
 use_degree_loss: False
 use_representation_based_exp_bonus: False
+rollout_length: 2048
+ppo_update_frequency: 500  # e.g. collect new PPO data every 1000 Laplacian updates
+ppo_epochs: 10
+
