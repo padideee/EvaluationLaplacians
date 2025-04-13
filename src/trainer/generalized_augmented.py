@@ -338,10 +338,12 @@ class GeneralizedAugmentedLagrangianTrainer(LaplacianEncoderTrainer, ABC):
     
     def update_training_state(self, params, error_update):
         '''Update error estimates'''
-
-        params['errors'] = error_update['errors']
-        params['quadratic_errors'] = error_update['quadratic_errors']
-        return params    
+        if self.algorithm == 'agdo':
+            return params
+        else:
+            params['errors'] = error_update['errors']
+            params['quadratic_errors'] = error_update['quadratic_errors']
+            return params
    
     @abstractmethod
     def update_barrier_coefficients(self, params, *args, **kwargs):   # TODO: eliminate this function when the best version is found

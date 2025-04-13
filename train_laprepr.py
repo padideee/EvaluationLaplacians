@@ -16,6 +16,7 @@ from src.trainer import (
     AugmentedLagrangianTrainer,
     SQPTrainer,
     CQPTrainer,
+    AGDOTrainer,
 )
 from src.agent.episodic_replay_buffer import EpisodicReplayBuffer
 
@@ -91,7 +92,7 @@ def main(hyperparams):
 
         # Initialize wandb logger
         logger = wandb.init(
-            project='laplacian-encoder--moved', 
+            project='laplacian-encoder--moved',
             dir=hparam_yaml['save_dir'],
             config=hparam_yaml,
             name=hyperparams.exp_label,
@@ -109,6 +110,8 @@ def main(hyperparams):
         Trainer = SQPTrainer
     elif algorithm == 'cqp':
         Trainer = CQPTrainer
+    elif algorithm == 'agdo':
+        Trainer = AGDOTrainer
     else:
         raise ValueError(f'Algorithm {algorithm} is not supported.')
 

@@ -47,6 +47,7 @@ def save_histogram(values, step, label="degree", save_dir="./results/histograms"
         plt.savefig(f"{save_dir}/{label}_step_{step}.png")
         plt.close()
 
+
 class LaplacianEncoderTrainer(Trainer, ABC):
     """
     Trainer that learns Laplacian-based representations,
@@ -111,22 +112,19 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         # how often to collect from PPO vs. how many representation steps?
         # For instance, do a PPO rollout for `rollout_length` steps every time
         # we do `ppo_update_frequency` representation updates:
-        rollout_length = 2000
-        ppo_update_frequency = 100  # e.g. collect new PPO data every 1000 Laplacian updates
-        ppo_epochs = 10
         current_frames_count = 0
 
         for step in range(self.total_train_steps):
             # 1) Periodically collect fresh PPO rollouts
             #    and update PPO. (we can this once per "epoch" rather than each step.)
-            if (step % ppo_update_frequency) == 0:
+            if (step % self.ppo_update_frequency) == 0:
                 if self.use_representation_based_exp_bonus:
-                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length, self.encoder_fn, params['encoder'])
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(self.rollout_length, self.encoder_fn, params['encoder'])
                 else:
-                    transitions, returns = self.ppo_agent.collect_ppo_experience(rollout_length)
+                    transitions, returns = self.ppo_agent.collect_ppo_experience(self.rollout_length)
                 current_frames_count += len(transitions)
                 self.replay_buffer.add_steps(transitions)
-                for _ in range(ppo_epochs):
+                for _ in range(self.ppo_epochs):
                     self.ppo_agent.update(transitions)
                 print(f" [PPO data collection] replay buffer size = {self.replay_buffer._current_size}")
 
@@ -148,13 +146,18 @@ class LaplacianEncoderTrainer(Trainer, ABC):
 
             # Logging
             if ((step + 1) % self.print_freq) == 0:
-                losses = metrics[:-1]  # e.g. total_loss, graph_loss, ...
-                metrics_dict = metrics[-1]  # e.g. dictionary of logs
+                if self.algorithm == 'agdo':
+                    metrics_dict = metrics
+                    losses = [metrics_dict[k] for k in ['loss_total', 'graph_loss', 'dual_loss', 'barrier_loss']]
+                else:
+                    losses = metrics[:-1]  # e.g. total_loss, graph_loss, ...
+                    metrics_dict = metrics[-1]  # e.g. dictionary of logs
 
                 metrics_dict['mean_return'] = np.mean(returns)
                 metrics_dict['max_return'] = np.max(returns)
                 metrics_dict['min_return'] = np.min(returns)
                 metrics_dict['frames'] = current_frames_count
+                metrics_dict['step'] = step
                 print(f" [PPO data collection] mean return = {metrics_dict['mean_return']:.4g}, ")
 
                 metrics_dict = self._compute_additional_metrics(params, metrics_dict)
@@ -162,10 +165,16 @@ class LaplacianEncoderTrainer(Trainer, ABC):
                 metrics_dict['examples'] = self._global_step * self.batch_size
                 metrics_dict['wall_clock_time'] = timer.time_cost()
 
-                self.train_info['loss_total'] = np.array([jax.device_get(losses[0])])[0]
-                self.train_info['graph_loss'] = np.array([jax.device_get(losses[1])])[0]
-                self.train_info['dual_loss'] = np.array([jax.device_get(losses[2])])[0]
-                self.train_info['barrier_loss'] = np.array([jax.device_get(losses[3])])[0]
+                if self.algorithm == 'agdo':
+                    self.train_info['loss_total'] = jax.device_get(losses[0])
+                    self.train_info['graph_loss'] = jax.device_get(losses[1])
+                    self.train_info['barrier_loss'] = jax.device_get(losses[2])  # AGDO: no dual_loss
+                    self.train_info['dual_loss'] = 0.0  # explicitly zero for compatibility/logging
+                else:
+                    self.train_info['loss_total'] = np.array([jax.device_get(losses[0])])[0]
+                    self.train_info['graph_loss'] = np.array([jax.device_get(losses[1])])[0]
+                    self.train_info['dual_loss'] = np.array([jax.device_get(losses[2])])[0]
+                    self.train_info['barrier_loss'] = np.array([jax.device_get(losses[3])])[0]
 
                 steps_per_sec = timer.steps_per_sec(step)
                 print(f"Training steps per second: {steps_per_sec:.4g}.")
@@ -231,8 +240,18 @@ class LaplacianEncoderTrainer(Trainer, ABC):
         grads, aux = jax.grad(self.loss_function, has_aux=True)(params, train_batch)
         updates, opt_state = self.optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
+        if self.algorithm == 'agdo':
+            params['encoder'] = hk.data_structures.map(self.project_embeddings, params['encoder'])
         params = self.update_training_state(params, aux[1])
         return params, opt_state, aux[0]
+
+    def project_embeddings(self, module_name, name, value):
+        if 'w' in name or 'kernel' in name:
+            max_norm = jnp.sqrt(2.0)
+            norms = jnp.linalg.norm(value, axis=0, keepdims=True)
+            scale = jnp.minimum(1.0, max_norm / (norms + 1e-8))
+            return value * scale
+        return value  # skip projecting biases or other params
 
     def train_step_non_permuted(self, params, train_batch, opt_state):
         grads, aux = jax.grad(self.loss_function, has_aux=True)(params, train_batch)

@@ -25,7 +25,7 @@ do_plot_eigenvectors: True
 obs_mode: xy
 window_size: 180
 reduction_factor: 1
-algorithm: al
+algorithm: agdo
 error_update_rate: 1
 q_error_update_rate: 0.1
 normalize_graph_loss: False
