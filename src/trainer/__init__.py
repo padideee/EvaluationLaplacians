@@ -6,3 +6,4 @@ from src.trainer.al import AugmentedLagrangianTrainer
 from src.trainer.quadratic_penalty_ggdo import QuadraticPenaltyGGDOTrainer
 from src.trainer.sqp import StopGradientQuadraticPenaltyTrainer as SQPTrainer
 from src.trainer.cqp import CoefficientSymmetryBreakingQuadraticPenaltyTrainer as CQPTrainer
+from src.trainer.agdo import AsymmetricGraphDrawingObjectiveTrainer as AGDOTrainer
