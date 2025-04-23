@@ -11,13 +11,14 @@ parser.add_argument('--config_name', type=str, default="al.yaml")
 
 
 batch_sizes = [2048]
-env_names = ["GridRoom-1", "GridRoom-4", "GridRoom-16"]
+env_names = ["GridMaze-7", "GridMaze-19"]
+env_names += ["GridRoom-1", "GridRoom-4", "GridRoom-16"]
 
 args = parser.parse_args()
 
 for env_name in env_names:
 
-    for s in [1234]:
+    for s in [1234, 1235, 1236]:
 
         for bs in batch_sizes:
 
